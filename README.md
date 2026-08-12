@@ -69,6 +69,18 @@ Read the ceiling before relying on it:
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 
+## Commands
+
+- **PHP Namespace Tools: Move Class to Namespace…** asks for the target
+  namespace, not a directory. PSR-4 maps the two onto each other, and the
+  namespace is what the code refers to. The directory is created if missing.
+- **PHP Namespace Tools: Rename Class and File…** renames the class and its
+  file together.
+
+Both run through the same path as dragging a file: namespace rewritten,
+references repointed, one undo step. The file is saved first, since the move
+reads from disk.
+
 ## Diagnostics
 
 Two problems are reported inline, both with a quick fix:

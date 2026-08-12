@@ -41,6 +41,7 @@ const {
     fullyQualifiedName,
     shortName,
     psr4NamespaceFor,
+    psr4DirectoryFor,
     namespaceDeclaration,
     offsetToPosition,
     typeDeclaration,
@@ -735,5 +736,39 @@ it('compares', function () {
     true,
     'the trait use counts as usage of the import',
 );
+
+// --- namespace to directory, the inverse mapping ---------------------------
+assert.strictEqual(psr4DirectoryFor('App\\Models', psr4), 'app/Models', 'a nested namespace');
+assert.strictEqual(psr4DirectoryFor('App', psr4), 'app', 'the mapped root itself');
+assert.strictEqual(psr4DirectoryFor('Database\\Seeders\\Cms', psr4), 'database/seeders/Cms', 'a second root');
+assert.strictEqual(
+    psr4DirectoryFor('Afsakar\\FilamentFabricator\\Tests\\Unit', psr4),
+    'plugins/filament-fabricator/tests/Unit',
+    'a package root nested in the project',
+);
+assert.strictEqual(psr4DirectoryFor('Vendor\\Whatever', psr4), null, 'an unmapped namespace');
+
+// A namespace that merely starts with a mapped prefix is not inside it.
+assert.strictEqual(psr4DirectoryFor('Application\\Models', psr4), null, 'no partial prefix match');
+
+// The longest prefix must win here too, or a sub-package would resolve into
+// the wrong directory.
+const overlappingPrefixes = { 'App\\': 'app/', 'App\\Domain\\': 'app/Domain/' };
+assert.strictEqual(
+    psr4DirectoryFor('App\\Domain\\Billing', overlappingPrefixes),
+    'app/Domain/Billing',
+    'prefers the longest matching prefix',
+);
+
+// The two directions must agree, since a move derives the directory from the
+// namespace and the diagnostics derive the namespace from the directory.
+for (const namespace of ['App', 'App\\Models', 'App\\Filament\\PageBlocks\\General', 'Database\\Seeders\\Cms']) {
+    const directory = psr4DirectoryFor(namespace, psr4);
+    assert.strictEqual(
+        psr4NamespaceFor(`${directory}/Thing.php`, psr4),
+        namespace,
+        `round trip for ${namespace}`,
+    );
+}
 
 console.log('all assertions passed');

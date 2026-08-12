@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -41,8 +41,19 @@
     "contributes": {
         "commands": [
             {
+                "command": "phpNamespaceTools.moveClass",
+                "title": "Move Class to Namespace…",
+                "category": "PHP Namespace Tools"
+            },
+            {
+                "command": "phpNamespaceTools.renameClass",
+                "title": "Rename Class and File…",
+                "category": "PHP Namespace Tools"
+            },
+            {
                 "command": "phpNamespaceTools.debugSymbols",
-                "title": "PHP Namespace Tools: Debug Workspace Symbols"
+                "title": "Debug Workspace Symbols",
+                "category": "PHP Namespace Tools"
             }
         ],
         "configuration": {
@@ -89,6 +100,18 @@
                     "description": "Fade out use statements whose name is never referred to in the file, and offer to remove them via Organize Imports."
                 }
             }
+        },
+        "menus": {
+            "commandPalette": [
+                {
+                    "command": "phpNamespaceTools.moveClass",
+                    "when": "resourceLangId == php"
+                },
+                {
+                    "command": "phpNamespaceTools.renameClass",
+                    "when": "resourceLangId == php"
+                }
+            ]
         }
     }
 }

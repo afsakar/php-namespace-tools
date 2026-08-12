@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- Add "Move Class to Namespace…" and "Rename Class and File…", both driving the
+  same move path as a drag in the explorer.
+- Derive a directory from a namespace, the inverse of the existing mapping, so
+  a move can be expressed in the terms the code actually uses.
+
 ## 0.7.0
 
 - Report a namespace that does not match its composer PSR-4 directory, with a

@@ -324,6 +324,45 @@ function psr4NamespaceFor(relativePath, psr4) {
 }
 
 /**
+ * The directory a namespace maps to, the inverse of {@link psr4NamespaceFor}.
+ *
+ * The longest matching prefix wins, matching the forward direction. When a
+ * prefix lists several roots the first is used, since only composer knows which
+ * of them a new file belongs in.
+ *
+ * @param {string} namespace
+ * @param {Object<string, string|string[]>} psr4
+ * @return {string|null} Workspace-relative directory, or null when unmapped.
+ */
+function psr4DirectoryFor(namespace, psr4) {
+    let best = null;
+
+    for (const [prefix, roots] of Object.entries(psr4 || {})) {
+        const trimmed = prefix.replace(/\\+$/, '');
+
+        if (namespace !== trimmed && !namespace.startsWith(`${trimmed}\\`)) {
+            continue;
+        }
+
+        if (best && trimmed.length <= best.prefix.length) {
+            continue;
+        }
+
+        const root = Array.isArray(roots) ? roots[0] : roots;
+
+        best = { prefix: trimmed, base: String(root).replace(/^\.\//, '').replace(/\/+$/, '') };
+    }
+
+    if (!best) {
+        return null;
+    }
+
+    const remainder = namespace.slice(best.prefix.length).replace(/^\\/, '');
+
+    return [best.base, remainder ? remainder.split('\\').join('/') : ''].filter(Boolean).join('/');
+}
+
+/**
  * Locate the namespace name in a `namespace X;` or `namespace X { }` statement.
  *
  * The keyword is captured separately rather than searched for inside the match,
@@ -1028,6 +1067,170 @@ async function updateReferences(edit, renames, output) {
     output.show(true);
 }
 
+/**
+ * Set while this extension performs a rename itself, so the rename participant
+ * does not compute the same edits a second time on top of its own.
+ */
+let performingOwnRename = false;
+
+/**
+ * Move PHP files, rewriting namespaces and references in the same edit.
+ *
+ * The text edits are queued before the rename so VS Code applies them while the
+ * files are still at their old paths, and the whole thing lands as one undo
+ * step.
+ *
+ * @param {Array<{oldUri: vscode.Uri, newUri: vscode.Uri}>} pairs
+ * @param {vscode.OutputChannel} output
+ * @return {Promise<boolean>}
+ */
+async function performMove(pairs, output) {
+    const edit = await namespaceUpdatesForMove(pairs, output);
+
+    for (const { oldUri, newUri } of pairs) {
+        await vscode.workspace.fs.createDirectory(newUri.with({ path: newUri.path.replace(/\/[^/]*$/, '') }));
+        edit.renameFile(oldUri, newUri, { overwrite: false });
+    }
+
+    performingOwnRename = true;
+
+    try {
+        return await vscode.workspace.applyEdit(edit);
+    } finally {
+        performingOwnRename = false;
+    }
+}
+
+/**
+ * The active PHP file, saved and parsed, or null with the reason reported.
+ *
+ * @return {Promise<{document: vscode.TextDocument, folder: vscode.WorkspaceFolder, psr4: Object, declaration: {name: string, index: number}, type: string|null}|null>}
+ */
+async function activePhpFile() {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor || editor.document.languageId !== 'php' || editor.document.uri.scheme !== 'file') {
+        vscode.window.showWarningMessage('Open a PHP file first.');
+
+        return null;
+    }
+
+    // The move pipeline reads files from disk, so unsaved edits would be lost.
+    if (editor.document.isDirty && !(await editor.document.save())) {
+        vscode.window.showWarningMessage('Save the file first.');
+
+        return null;
+    }
+
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    const psr4 = folder && (await readPsr4(folder));
+
+    if (!psr4) {
+        vscode.window.showWarningMessage('No composer.json with a PSR-4 autoload map was found.');
+
+        return null;
+    }
+
+    const declaration = namespaceDeclaration(editor.document.getText());
+
+    if (!declaration) {
+        vscode.window.showWarningMessage('This file declares no namespace.');
+
+        return null;
+    }
+
+    return {
+        document: editor.document,
+        folder,
+        psr4,
+        declaration,
+        type: typeDeclaration(editor.document.getText()),
+    };
+}
+
+/**
+ * Move the active class to another namespace, asking for the target.
+ *
+ * The namespace is asked for rather than the directory: PSR-4 maps the two onto
+ * each other, and the namespace is what the code actually refers to.
+ *
+ * @param {vscode.OutputChannel} output
+ */
+async function moveClassCommand(output) {
+    const context = await activePhpFile();
+
+    if (!context) {
+        return;
+    }
+
+    const target = await vscode.window.showInputBox({
+        title: 'Move class to namespace',
+        value: context.declaration.name,
+        valueSelection: [context.declaration.name.lastIndexOf('\\') + 1, context.declaration.name.length],
+        prompt: 'The directory is derived from the composer PSR-4 map.',
+        validateInput: (value) => {
+            const trimmed = value.trim().replace(/^\\/, '');
+
+            if (!QUALIFIED_NAME.test(trimmed)) {
+                return 'Not a valid namespace.';
+            }
+
+            return psr4DirectoryFor(trimmed, context.psr4) ? null : 'No PSR-4 root covers that namespace.';
+        },
+    });
+
+    if (!target) {
+        return;
+    }
+
+    const directory = psr4DirectoryFor(target.trim().replace(/^\\/, ''), context.psr4);
+    const name = context.document.uri.path.slice(context.document.uri.path.lastIndexOf('/') + 1);
+    const newUri = vscode.Uri.joinPath(context.folder.uri, directory, name);
+
+    if (newUri.path === context.document.uri.path) {
+        return;
+    }
+
+    await performMove([{ oldUri: context.document.uri, newUri }], output);
+}
+
+/**
+ * Rename the active class and its file together.
+ *
+ * @param {vscode.OutputChannel} output
+ */
+async function renameClassCommand(output) {
+    const context = await activePhpFile();
+
+    if (!context) {
+        return;
+    }
+
+    if (!context.type) {
+        vscode.window.showWarningMessage('This file declares no class, interface, trait or enum.');
+
+        return;
+    }
+
+    const target = await vscode.window.showInputBox({
+        title: `Rename ${context.type}`,
+        value: context.type,
+        prompt: 'The file is renamed to match, and references are repointed.',
+        validateInput: (value) => (IDENTIFIER.test(value.trim()) ? null : 'Not a valid class name.'),
+    });
+
+    if (!target || target.trim() === context.type) {
+        return;
+    }
+
+    const path = context.document.uri.path;
+    const newUri = context.document.uri.with({
+        path: `${path.slice(0, path.lastIndexOf('/'))}/${target.trim()}.php`,
+    });
+
+    await performMove([{ oldUri: context.document.uri, newUri }], output);
+}
+
 /** Marks a diagnostic this extension knows how to fix. */
 const NAMESPACE_MISMATCH = 'phpNamespaceTools.namespaceMismatch';
 const UNUSED_IMPORT = 'phpNamespaceTools.unusedImport';
@@ -1201,7 +1404,13 @@ function activate(context) {
             ],
         }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
+        vscode.commands.registerCommand('phpNamespaceTools.moveClass', () => moveClassCommand(output)),
+        vscode.commands.registerCommand('phpNamespaceTools.renameClass', () => renameClassCommand(output)),
         vscode.workspace.onWillRenameFiles((event) => {
+            if (performingOwnRename) {
+                return;
+            }
+
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
                 event.waitUntil(namespaceUpdatesForMove(event.files, output));
             }
@@ -1228,6 +1437,7 @@ module.exports = {
     fullyQualifiedName,
     shortName,
     psr4NamespaceFor,
+    psr4DirectoryFor,
     namespaceDeclaration,
     typeDeclaration,
     fqnReplacements,
