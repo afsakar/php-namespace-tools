@@ -56,6 +56,14 @@ shorten it. Exactly one offer is made, decided by what the file already imports:
 A new import is sorted into the existing block, or opens one after the
 `namespace` statement when there is none.
 
+The quick fix acts on the name under the cursor. To do a whole file at once run
+**PHP Namespace Tools: Shorten All Qualified Names**, which applies the same
+decision to every name in document order. A class is imported once however many
+times it appears, and when two different classes share a short name the first
+one takes it while the rest are left fully qualified and listed in the output
+channel — importing both would leave the file compiling with one of the names
+resolving to the wrong class.
+
 ## Namespace on move
 
 Moving a PHP file changes the namespace PSR-4 requires it to declare. VS Code

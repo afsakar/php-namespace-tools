@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- Add **Shorten All Qualified Names**, applying the quick fix to every name in a
+  file at once. Later names see the imports added for earlier ones, so a class
+  whose short name is already claimed stays fully qualified instead of resolving
+  to the wrong one, and is reported in the output channel.
+
 ## 0.7.0
 
 - Offer a quick fix on a qualified name that shortens it: reusing a direct

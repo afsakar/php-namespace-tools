@@ -46,6 +46,8 @@ const {
     fileBaseName,
     qualifiedNameAt,
     importInsertion,
+    qualifiedNameOccurrences,
+    shortenAllPlan,
 } = require('./extension.js');
 
 const source = `<?php
@@ -593,5 +595,101 @@ assert.strictEqual(
     '<?php\n\nuse App\\Support\\Helper;\n\nclass Product {}\n',
     'falls back to the opening tag',
 );
+
+// --- shortening every name in a file ---------------------------------------
+const B = String.fromCharCode(92);
+
+const apply = (text) => {
+    const plan = shortenAllPlan(text);
+    let result = text;
+    const edits = [
+        ...plan.replacements.map((e) => ({ index: e.index, length: e.length, text: e.replacement })),
+        ...plan.insertions.map((e) => ({ index: e.index, length: 0, text: e.text })),
+    ].sort((a, b) => b.index - a.index || b.length - a.length);
+    for (const e of edits) {
+        result = result.slice(0, e.index) + e.text + result.slice(e.index + e.length);
+    }
+    return { result, plan };
+};
+
+const many = [
+    '<?php', '',
+    `namespace App${B}Models;`, '',
+    `use Illuminate${B}Database${B}Eloquent${B}Model;`, '',
+    'class Product extends Model', '{',
+    `    /** @use HasFactory<${B}Database${B}Factories${B}ProductFactory> */`,
+    `    protected $casts = [${B}App${B}Enums${B}Status::class];`,
+    `    public function scope(${B}Illuminate${B}Database${B}Eloquent${B}Builder $q) {}`,
+    '}', '',
+].join('\n');
+
+const bulk = apply(many);
+assert.strictEqual(bulk.plan.replacements.length, 3, 'every qualified name is planned');
+assert.ok(bulk.result.includes(`use Database${B}Factories${B}ProductFactory;`), 'factory imported');
+assert.ok(bulk.result.includes(`use App${B}Enums${B}Status;`), 'enum imported');
+assert.ok(bulk.result.includes(`use Illuminate${B}Database${B}Eloquent${B}Builder;`), 'builder imported');
+assert.ok(bulk.result.includes('HasFactory<ProductFactory>'), 'docblock shortened');
+assert.ok(bulk.result.includes('[Status::class]'), 'attribute shortened');
+assert.ok(bulk.result.includes('scope(Builder $q)'), 'parameter shortened');
+
+// The import block must come out sorted, with the pre-existing entry in place.
+const useLines = bulk.result.split('\n').filter((line) => line.startsWith('use '));
+assert.deepStrictEqual(useLines, [...useLines].sort(), 'the block is left in alphabetical order');
+assert.strictEqual(useLines.length, 4, 'three added to the one already there');
+
+// The namespace statement and the existing import are declarations, not
+// references, and must never be rewritten.
+assert.ok(bulk.result.includes(`namespace App${B}Models;`), 'the namespace statement is untouched');
+
+// Two different classes sharing a short name: the first wins, the second stays
+// qualified rather than silently resolving to the first.
+const clashing = [
+    '<?php', `namespace App;`, '',
+    'class Report', '{',
+    `    public function a(${B}App${B}Pdf${B}Writer $w) {}`,
+    `    public function b(${B}App${B}Csv${B}Writer $w) {}`,
+    '}', '',
+].join('\n');
+
+const conflicted = apply(clashing);
+assert.strictEqual(conflicted.plan.skipped.length, 1, 'one name is reported as skipped');
+assert.strictEqual(conflicted.plan.skipped[0], `App${B}Csv${B}Writer`, 'the later one is skipped');
+assert.ok(conflicted.result.includes(`use App${B}Pdf${B}Writer;`), 'the first is imported');
+assert.ok(!conflicted.result.includes(`use App${B}Csv${B}Writer;`), 'the second is not imported');
+assert.ok(conflicted.result.includes(`b(${B}App${B}Csv${B}Writer $w)`), 'the second is left fully qualified');
+
+// Repeat occurrences of one class share a single import.
+const repeated = [
+    '<?php', `namespace App;`, '',
+    'class Report', '{',
+    `    public function a(${B}App${B}Pdf${B}Writer $w) {}`,
+    `    public function b(${B}App${B}Pdf${B}Writer $w) {}`,
+    '}', '',
+].join('\n');
+
+const twice = apply(repeated);
+assert.strictEqual(twice.plan.replacements.length, 2, 'both occurrences shortened');
+assert.strictEqual(
+    twice.result.split('\n').filter((line) => line === `use App${B}Pdf${B}Writer;`).length,
+    1,
+    'imported once',
+);
+
+// A name only reachable through an imported parent namespace costs no import.
+const viaParent = [
+    '<?php', `namespace App;`, '',
+    `use Database${B}Factories;`, '',
+    'class Product', '{',
+    `    /** @use HasFactory<${B}Database${B}Factories${B}ProductFactory> */`,
+    '}', '',
+].join('\n');
+
+const relative = apply(viaParent);
+assert.strictEqual(relative.plan.insertions.length, 0, 'no import is added');
+assert.ok(relative.result.includes(`HasFactory<Factories${B}ProductFactory>`), 'written against the parent');
+
+// Occurrence scanning must ignore declarations outright.
+const decls = `<?php\nnamespace App${B}Models;\n\nuse Illuminate${B}Support${B}Str;\n\nclass P {}\n`;
+assert.deepStrictEqual(qualifiedNameOccurrences(decls), [], 'namespace and imports are not occurrences');
 
 console.log('all assertions passed');

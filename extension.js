@@ -327,6 +327,131 @@ function importInsertion(text, fqn) {
 }
 
 /**
+ * Every qualified name in a file that is a candidate for shortening.
+ *
+ * The `namespace` statement and the import block are excluded: their names are
+ * declarations, not references. Names inside a double-quoted string are not
+ * matched either, because the doubled separator PHP requires there does not fit
+ * the pattern — which is correct, since a string cannot be shortened.
+ *
+ * @param {string} text
+ * @return {Array<{fqn: string, index: number, length: number}>} In document order.
+ */
+function qualifiedNameOccurrences(text) {
+    const excluded = [];
+    const namespace = text.match(/^[ \t]*namespace[ \t]+[^;{]+/m);
+
+    if (namespace) {
+        excluded.push([namespace.index, namespace.index + namespace[0].length]);
+    }
+
+    const region = importRegion(text);
+    const useStatement = /\buse\s+(?:function\s+|const\s+)?[^;(]+;/g;
+
+    let statement;
+    while ((statement = useStatement.exec(region)) !== null) {
+        excluded.push([statement.index, statement.index + statement[0].length]);
+    }
+
+    const pattern = /\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+/g;
+    const found = [];
+
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+        if (excluded.some(([start, end]) => match.index >= start && match.index < end)) {
+            continue;
+        }
+
+        found.push({
+            fqn: match[0].replace(/^\\+/, ''),
+            index: match.index,
+            length: match[0].length,
+        });
+    }
+
+    return found;
+}
+
+/**
+ * Plan the shortening of every qualified name in a file.
+ *
+ * Occurrences are processed in document order and each new import is taken into
+ * account for the ones after it, so a second name whose short form is already
+ * claimed is left fully qualified rather than quietly resolving elsewhere.
+ *
+ * Insertion anchors are computed against the original text. Because each new
+ * import is anchored before the first existing import that sorts after it, and
+ * lines sharing an anchor are sorted among themselves, the resulting block stays
+ * in order without any offset arithmetic.
+ *
+ * @param {string} text
+ * @return {{replacements: Array<{index: number, length: number, replacement: string}>,
+ *           insertions: Array<{index: number, text: string}>,
+ *           skipped: string[]}}
+ */
+function shortenAllPlan(text) {
+    const imports = collectImports(text);
+    const taken = new Set(imports.map((entry) => entry.alias));
+    const declared = typeDeclaration(text);
+
+    if (declared) {
+        taken.add(declared);
+    }
+
+    const replacements = [];
+    const added = new Map();
+    const skipped = new Set();
+
+    for (const occurrence of qualifiedNameOccurrences(text)) {
+        const direct = imports.find((entry) => entry.fqn === occurrence.fqn);
+
+        if (direct) {
+            replacements.push({ ...occurrence, replacement: direct.alias });
+            continue;
+        }
+
+        const relative = relativize(occurrence.fqn, imports);
+
+        if (relative) {
+            replacements.push({ ...occurrence, replacement: relative });
+            continue;
+        }
+
+        const short = shortName(occurrence.fqn);
+
+        if (taken.has(short)) {
+            skipped.add(occurrence.fqn);
+            continue;
+        }
+
+        taken.add(short);
+        imports.push({ fqn: occurrence.fqn, alias: short });
+
+        const anchor = importInsertion(text, occurrence.fqn);
+        const lines = added.get(anchor.index) ?? [];
+
+        lines.push(anchor.text);
+        added.set(anchor.index, lines);
+
+        replacements.push({ ...occurrence, replacement: short });
+    }
+
+    // When no import block exists the anchor text opens one with a leading blank
+    // line. Several imports landing there must share that one blank line rather
+    // than each contributing another.
+    const insertions = [...added.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([index, lines]) => {
+            const opensBlock = lines.some((line) => line.startsWith('\n'));
+            const sorted = lines.map((line) => line.replace(/^\n/, '')).sort();
+
+            return { index, text: (opensBlock ? '\n' : '') + sorted.join('') };
+        });
+
+    return { replacements, insertions, skipped: [...skipped] };
+}
+
+/**
  * The file name of a URI path, without its `.php` extension.
  *
  * @param {string} uriPath
@@ -612,6 +737,64 @@ const shortenProvider = {
         return [action];
     },
 };
+
+/**
+ * Shorten every qualified name in the active PHP file at once.
+ *
+ * @param {vscode.OutputChannel} output
+ */
+async function shortenAll(output) {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor || editor.document.languageId !== 'php') {
+        vscode.window.showInformationMessage('Open a PHP file first.');
+
+        return;
+    }
+
+    const { document } = editor;
+    const plan = shortenAllPlan(document.getText());
+
+    if (plan.replacements.length === 0) {
+        vscode.window.showInformationMessage('No qualified name to shorten.');
+
+        return;
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+
+    for (const replacement of plan.replacements) {
+        edit.replace(
+            document.uri,
+            new vscode.Range(
+                document.positionAt(replacement.index),
+                document.positionAt(replacement.index + replacement.length),
+            ),
+            replacement.replacement,
+        );
+    }
+
+    for (const insertion of plan.insertions) {
+        edit.insert(document.uri, document.positionAt(insertion.index), insertion.text);
+    }
+
+    await vscode.workspace.applyEdit(edit);
+
+    const imported = plan.insertions.reduce((total, entry) => total + entry.text.trimStart().split('\n').length - 1, 0);
+
+    vscode.window.showInformationMessage(
+        `Shortened ${plan.replacements.length} name(s), added ${imported} import(s).` +
+            (plan.skipped.length > 0 ? ` ${plan.skipped.length} left qualified.` : ''),
+    );
+
+    if (plan.skipped.length > 0) {
+        output.appendLine('left fully qualified, their short name is taken in this file:');
+        for (const fqn of plan.skipped) {
+            output.appendLine(`  ${fqn}`);
+        }
+        output.show(true);
+    }
+}
 
 /**
  * @param {vscode.TextDocument} document
@@ -1036,6 +1219,7 @@ function activate(context) {
             providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
         }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
+        vscode.commands.registerCommand('phpNamespaceTools.shortenAll', () => shortenAll(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
                 event.waitUntil(namespaceUpdatesForMove(event.files, output));
@@ -1063,5 +1247,7 @@ module.exports = {
     fileBaseName,
     qualifiedNameAt,
     importInsertion,
+    qualifiedNameOccurrences,
+    shortenAllPlan,
     offsetToPosition,
 };
