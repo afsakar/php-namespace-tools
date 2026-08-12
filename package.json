@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -77,6 +77,16 @@
                     "type": "boolean",
                     "default": true,
                     "description": "When a PHP file moves, repoint references to it across the project: use statements, ::class expressions and class names written as plain strings. Every rewritten file is listed in the PHP Namespace Tools output channel."
+                },
+                "phpNamespaceTools.reportNamespaceMismatch": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Warn when a file's namespace does not match its composer PSR-4 directory. Catches files moved outside the editor, which raise no rename event."
+                },
+                "phpNamespaceTools.reportUnusedImports": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Fade out use statements whose name is never referred to in the file, and offer to remove them via Organize Imports."
                 }
             }
         }

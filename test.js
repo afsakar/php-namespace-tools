@@ -33,6 +33,10 @@ Module._resolveFilename = function (request, ...rest) {
 
 const {
     collectImports,
+    importStatements,
+    isNameUsed,
+    unusedImports,
+    maskLiterals,
     relativize,
     fullyQualifiedName,
     shortName,
@@ -511,6 +515,225 @@ assert.strictEqual(
     bareNameReplacements('PageBlocks\\About\\CompanyInfoBlock::x()', 'CompanyInfoBlock', 'Z').length,
     0,
     'the bare pass does not fire inside a qualified name',
+);
+
+// --- import statements and unused detection --------------------------------
+const withUnused = `<?php
+
+namespace App\\Filament\\Resources;
+
+use App\\Models\\Post;
+use App\\Models\\Unused;
+use Filament\\Forms;
+use Illuminate\\Support\\{Str, Collection};
+use App\\Traits\\HasSlug;
+
+class PostResource
+{
+    use HasSlug;
+
+    /** @var Post */
+    protected $model;
+
+    public function form(): array
+    {
+        return [Forms\\Components\\TextInput::make(Str::slug('x'))];
+    }
+}
+`;
+
+const statements = importStatements(withUnused);
+assert.strictEqual(statements.length, 5, 'one entry per statement, not per name');
+assert.strictEqual(statements[3].grouped, true, 'the group import is marked');
+assert.strictEqual(statements[3].entries.length, 2, 'the group import carries both names');
+assert.strictEqual(
+    withUnused.slice(statements[0].index, statements[0].index + statements[0].length),
+    'use App\\Models\\Post;',
+    'the recorded span covers exactly the statement',
+);
+
+assert.strictEqual(isNameUsed(withUnused, 'Post'), true, 'used in a docblock');
+assert.strictEqual(isNameUsed(withUnused, 'HasSlug'), true, 'used as a trait in the class body');
+assert.strictEqual(isNameUsed(withUnused, 'Forms'), true, 'used as a namespace prefix');
+assert.strictEqual(isNameUsed(withUnused, 'Str'), true, 'used as a static call');
+assert.strictEqual(isNameUsed(withUnused, 'Unused'), false, 'never mentioned');
+assert.strictEqual(isNameUsed(withUnused, 'Collection'), false, 'a dead member of a live group import');
+
+const dead = unusedImports(withUnused);
+assert.strictEqual(dead.length, 1, 'only the wholly unused statement is reported');
+assert.strictEqual(dead[0].entries[0].alias, 'Unused', 'and it is the right one');
+
+// A group import keeping one live member must survive intact, since removing
+// only the dead half would mean rewriting the statement rather than deleting it.
+assert.ok(
+    !dead.some((statement) => statement.grouped),
+    'a partially used group import is left alone',
+);
+
+// The import block itself must not count as usage, or nothing would ever be
+// reported as unused.
+assert.strictEqual(
+    isNameUsed('<?php\nnamespace A;\nuse App\\Models\\Unused;\n\nclass X {}\n', 'Unused'),
+    false,
+    'a name appearing only in its own import is unused',
+);
+
+// --- prose is not an import ------------------------------------------------
+// A Laravel config returns an array and declares no type, so there is no import
+// block for the parser to stop at. These are real excerpts from a project.
+const configFile = `<?php
+
+return [
+    /*
+    |------------------------------------------------------------------
+    | Force HTTPS
+    |------------------------------------------------------------------
+    |
+    | Enable this to force your application to use the HTTPS scheme.
+    |
+    */
+
+    ForceScheme::class => true,
+
+    // If you want to use your own DTO, you can change the link option.
+    'link' => Link::class,
+];
+`;
+
+assert.deepStrictEqual(collectImports(configFile), [], 'prose containing "use" yields no imports');
+assert.deepStrictEqual(unusedImports(configFile), [], 'and therefore nothing to remove');
+
+// From a test file that asserts on a string containing a namespace fragment.
+assert.deepStrictEqual(
+    collectImports(`<?php\nit('x', function () {\n    expect($r)->toContain('App\\\\');\n});\n`),
+    [],
+    'a namespace fragment inside a string is not an import',
+);
+
+// A real import in such a file must still be found.
+assert.deepStrictEqual(
+    collectImports("<?php\n\nuse App\\Support\\Link;\n\nreturn ['link' => Link::class];\n"),
+    [{ fqn: 'App\\Support\\Link', alias: 'Link' }],
+    'a genuine import in a class-less file still parses',
+);
+
+// Multi-line group imports are legal and must survive the identifier check.
+assert.deepStrictEqual(
+    collectImports('<?php\nuse Illuminate\\Support\\{\n    Str,\n    Collection,\n};\n').map((e) => e.alias),
+    ['Str', 'Collection'],
+    'a group import spanning several lines',
+);
+
+// --- usage above the class declaration -------------------------------------
+// An attribute and a docblock type both sit before the class, so defining the
+// body as "everything after the imports" would report these as unused.
+const attributed = `<?php
+
+namespace App\\Livewire\\Auth;
+
+use Illuminate\\Support\\Carbon;
+use Livewire\\Attributes\\Layout;
+use Livewire\\Attributes\\Lazy;
+
+/**
+ * @property Carbon $lastAttemptAt
+ */
+#[Layout('layouts.guest')]
+class Login
+{
+}
+`;
+
+assert.strictEqual(isNameUsed(attributed, 'Layout'), true, 'used by an attribute above the class');
+assert.strictEqual(isNameUsed(attributed, 'Carbon'), true, 'used by a docblock above the class');
+assert.strictEqual(isNameUsed(attributed, 'Lazy'), false, 'genuinely unused');
+assert.deepStrictEqual(
+    unusedImports(attributed).flatMap((s) => s.entries.map((e) => e.alias)),
+    ['Lazy'],
+    'only the genuinely unused import is reported',
+);
+
+// A helper file declares no type at all, so it has no import block boundary.
+const helper = `<?php
+
+use Illuminate\\Support\\Str;
+use Illuminate\\Support\\Collection;
+
+function slugify(string $value): string
+{
+    return Str::slug($value);
+}
+`;
+
+assert.strictEqual(isNameUsed(helper, 'Str'), true, 'used inside a function in a class-less file');
+assert.strictEqual(isNameUsed(helper, 'Collection'), false, 'unused in a class-less file');
+
+// An import must never count as its own usage.
+assert.strictEqual(
+    isNameUsed('<?php\nuse App\\Models\\Post;\nuse App\\Other\\Post as Legacy;\n', 'Post'),
+    false,
+    'the name inside another import statement is not usage',
+);
+
+// --- comments, strings and brace depth -------------------------------------
+assert.strictEqual(
+    maskLiterals('<?php // use App\\Models\\Post;\nuse App\\Models\\Page;\n').length,
+    '<?php // use App\\Models\\Post;\nuse App\\Models\\Page;\n'.length,
+    'masking preserves every offset',
+);
+
+assert.deepStrictEqual(
+    collectImports('<?php\n// use Illuminate\\Contracts\\Auth\\MustVerifyEmail;\nuse App\\Models\\Post;\n').map(
+        (e) => e.alias,
+    ),
+    ['Post'],
+    'a commented-out import is not an import',
+);
+
+assert.deepStrictEqual(
+    collectImports('<?php\n/* use App\\Old\\Thing; */\nuse App\\Models\\Post;\n').map((e) => e.alias),
+    ['Post'],
+    'a block-commented import is not an import',
+);
+
+assert.deepStrictEqual(
+    collectImports("<?php\n$sql = 'use App\\\\Old;';\nuse App\\Models\\Post;\n").map((e) => e.alias),
+    ['Post'],
+    'an import inside a string is not an import',
+);
+
+// A trait use inside an anonymous class: no line-anchored search for a class
+// declaration can see `new class {`, so brace depth is what rules it out.
+assert.deepStrictEqual(
+    collectImports(`<?php
+use Afsakar\\Concerns\\InteractsWithAuditDiffs;
+
+it('compares', function () {
+    $subject = new class {
+        use InteractsWithAuditDiffs;
+    };
+});
+`).map((e) => e.alias),
+    ['InteractsWithAuditDiffs'],
+    'a trait use inside an anonymous class is not a second import',
+);
+
+// And the import is then correctly seen as used by that trait use.
+assert.strictEqual(
+    isNameUsed(
+        `<?php
+use Afsakar\\Concerns\\InteractsWithAuditDiffs;
+
+it('compares', function () {
+    $subject = new class {
+        use InteractsWithAuditDiffs;
+    };
+});
+`,
+        'InteractsWithAuditDiffs',
+    ),
+    true,
+    'the trait use counts as usage of the import',
 );
 
 console.log('all assertions passed');

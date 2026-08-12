@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+- Report a namespace that does not match its composer PSR-4 directory, with a
+  quick fix that rewrites it and repoints references. Catches files moved
+  outside the editor, which raise no rename event.
+- Report imports nothing refers to, and remove them through Organize Imports.
+- Parse imports from masked source: comments and string contents are blanked,
+  and only statements at the top brace level count. A commented-out import was
+  previously read as live, prose in a config file could be read as an import,
+  and a trait use inside `new class { }` was counted as a second import.
+
 ## 0.6.0
 
 - Repoint references written relative to an imported parent namespace, such as

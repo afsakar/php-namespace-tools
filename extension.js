@@ -10,19 +10,71 @@ const TYPE_KINDS = new Set([
 ]);
 
 /**
- * Everything before the first type declaration, which is the only region where
- * import statements may legally appear.
+ * The file with comments and string contents blanked out, character for
+ * character, so every offset still lines up with the original.
  *
- * Slicing here is what keeps `use SomeTrait;` inside a class body and the
- * closure `use ($captured)` form out of the import list.
+ * Import parsing runs on this. Without it a commented-out `use` is read as a
+ * live import, and prose in a config file — which declares no type and so has
+ * no import block to stop at — turns the English word "use" into one.
+ *
+ * Heredocs are not recognised; they sit inside function bodies, which the
+ * top-level check already rejects.
  *
  * @param {string} text
  * @return {string}
  */
-function importRegion(text) {
-    const declaration = text.match(/^[ \t]*(?:(?:abstract|final|readonly)[ \t]+)*(?:class|interface|trait|enum)[ \t]/m);
+function maskLiterals(text) {
+    const out = text.split('');
+    let index = 0;
 
-    return declaration ? text.slice(0, declaration.index) : text;
+    const blankToEndOfLine = () => {
+        while (index < text.length && text[index] !== '\n') {
+            out[index++] = ' ';
+        }
+    };
+
+    while (index < text.length) {
+        const character = text[index];
+
+        if (character === '/' && text[index + 1] === '/') {
+            blankToEndOfLine();
+        } else if (character === '#') {
+            // `#[Attr]` is an attribute, not a comment.
+            if (text[index + 1] === '[') {
+                index++;
+            } else {
+                blankToEndOfLine();
+            }
+        } else if (character === '/' && text[index + 1] === '*') {
+            out[index++] = ' ';
+            out[index++] = ' ';
+
+            while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) {
+                out[index++] = ' ';
+            }
+
+            out[index++] = ' ';
+            out[index++] = ' ';
+        } else if (character === "'" || character === '"') {
+            index++;
+
+            while (index < text.length && text[index] !== character) {
+                if (text[index] === '\\') {
+                    out[index++] = ' ';
+                }
+
+                if (index < text.length) {
+                    out[index++] = ' ';
+                }
+            }
+
+            index++;
+        } else {
+            index++;
+        }
+    }
+
+    return out.join('');
 }
 
 /**
@@ -36,52 +88,163 @@ function importRegion(text) {
  * @return {Array<{fqn: string, alias: string}>}
  */
 function collectImports(text) {
-    const imports = [];
+    return importStatements(text).flatMap((statement) => statement.entries);
+}
+
+/**
+ * The same imports, grouped by the statement that declared them and carrying
+ * the offset and length of that statement.
+ *
+ * Removing an unused import needs the span of the whole statement, which the
+ * flattened view throws away.
+ *
+ * @param {string} text
+ * @return {Array<{index: number, length: number, grouped: boolean, entries: Array<{fqn: string, alias: string}>}>}
+ */
+function importStatements(text) {
+    const statements = [];
 
     // Not line-anchored: `<?php use A;` and `use A; use B;` are both legal. The
     // body excludes `(` so a closure `use (...)` can never start a match.
-    const statement = /\buse\s+(function\s+|const\s+)?([^;(]+);/g;
+    const pattern = /\buse\s+(function\s+|const\s+)?([^;(]+);/g;
+    const masked = maskLiterals(text);
 
-    const region = importRegion(text);
-
+    let cursor = 0;
+    let depth = 0;
     let match;
-    while ((match = statement.exec(region)) !== null) {
+
+    while ((match = pattern.exec(masked)) !== null) {
         if (match[1]) {
+            continue;
+        }
+
+        // An import lives at the top level. Anything deeper is a trait use in a
+        // class body — including `new class { use SomeTrait; }`, which no
+        // line-anchored search for a class declaration can see.
+        for (; cursor < match.index; cursor++) {
+            if (masked[cursor] === '{') {
+                depth++;
+            } else if (masked[cursor] === '}') {
+                depth--;
+            }
+        }
+
+        if (depth !== 0) {
             continue;
         }
 
         const body = match[2].trim();
         const group = body.match(/^(.+?)\\\{(.+)\}$/s);
+        const entries = [];
 
         if (group) {
             for (const member of group[2].split(',')) {
-                addImport(imports, `${group[1]}\\${member.trim()}`);
+                addImport(entries, `${group[1]}\\${member.trim()}`);
             }
-            continue;
+        } else {
+            addImport(entries, body);
         }
 
-        addImport(imports, body);
+        if (entries.length > 0) {
+            statements.push({ index: match.index, length: match[0].length, grouped: Boolean(group), entries });
+        }
     }
 
-    return imports;
+    return statements;
 }
 
 /**
+ * Whether a name is referred to anywhere outside the import block.
+ *
+ * A trailing backslash is deliberately allowed, so `use App\Filament\PageBlocks;`
+ * counts as used by `PageBlocks\About\CompanyInfoBlock`. Docblock types and
+ * attributes are plain text here and count too.
+ *
+ * @param {string} text
+ * @param {string} alias
+ * @return {boolean}
+ */
+function isNameUsed(text, alias) {
+    return nameAppearsIn(textWithoutImports(text), alias);
+}
+
+/**
+ * The file with its import statements blanked out, preserving every offset.
+ *
+ * Usage cannot be defined as "after the import block": a file with no type
+ * declaration has no such boundary and would appear to use nothing, and an
+ * attribute or a docblock `@property` sits above the class and would be missed.
+ *
+ * @param {string} text
+ * @return {string}
+ */
+function textWithoutImports(text) {
+    let masked = text;
+
+    for (const statement of importStatements(text)) {
+        masked =
+            masked.slice(0, statement.index) +
+            ' '.repeat(statement.length) +
+            masked.slice(statement.index + statement.length);
+    }
+
+    return masked;
+}
+
+/**
+ * @param {string} body
+ * @param {string} alias
+ * @return {boolean}
+ */
+function nameAppearsIn(body, alias) {
+    return new RegExp(`(?<![A-Za-z0-9_$\\\\>:'"])${alias}(?![A-Za-z0-9_])`).test(body);
+}
+
+/**
+ * Import statements whose every name goes unused in the file.
+ *
+ * A statement is only reported when all of its names are unused, so a group
+ * import with one live member is left intact rather than partially rewritten.
+ *
+ * @param {string} text
+ * @return {Array<{index: number, length: number, grouped: boolean, entries: Array<{fqn: string, alias: string}>}>}
+ */
+function unusedImports(text) {
+    const body = textWithoutImports(text);
+
+    return importStatements(text).filter((statement) =>
+        statement.entries.every((entry) => !nameAppearsIn(body, entry.alias)),
+    );
+}
+
+/** A single PHP identifier. */
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A namespace-separated run of identifiers, which is all an import may be. */
+const QUALIFIED_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*$/;
+
+/**
+ * Record an import, rejecting anything that is not a real qualified name.
+ *
+ * The check is load-bearing rather than defensive. A file with no type
+ * declaration — a Laravel config returning an array, a compiled Blade view —
+ * has no import block to stop at, so the statement pattern goes on to match the
+ * English word "use" inside a comment and swallow everything up to the next
+ * semicolon.
+ *
  * @param {Array<{fqn: string, alias: string}>} imports
  * @param {string} declaration
  */
 function addImport(imports, declaration) {
-    const aliased = declaration.match(/^(.+?)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/i);
+    const aliased = declaration.match(/^([\s\S]+?)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/i);
     const fqn = (aliased ? aliased[1] : declaration).trim().replace(/^\\/, '');
+    const alias = aliased ? aliased[2] : fqn.split('\\').pop();
 
-    if (!fqn || fqn.includes('{')) {
+    if (!QUALIFIED_NAME.test(fqn) || !IDENTIFIER.test(alias)) {
         return;
     }
 
-    imports.push({
-        fqn,
-        alias: aliased ? aliased[2] : fqn.split('\\').pop(),
-    });
+    imports.push({ fqn, alias });
 }
 
 /**
@@ -865,20 +1028,190 @@ async function updateReferences(edit, renames, output) {
     output.show(true);
 }
 
+/** Marks a diagnostic this extension knows how to fix. */
+const NAMESPACE_MISMATCH = 'phpNamespaceTools.namespaceMismatch';
+const UNUSED_IMPORT = 'phpNamespaceTools.unusedImport';
+
+/**
+ * Report a namespace that no longer matches its PSR-4 directory, and imports
+ * that nothing in the file refers to.
+ *
+ * A file moved outside the editor — by git, by `mv`, by a merge — never raises
+ * a rename event, so this is the only thing that catches it.
+ *
+ * @param {vscode.TextDocument} document
+ * @param {vscode.DiagnosticCollection} diagnostics
+ */
+async function refreshDiagnostics(document, diagnostics) {
+    if (document.languageId !== 'php' || document.uri.scheme !== 'file') {
+        return;
+    }
+
+    const configuration = vscode.workspace.getConfiguration('phpNamespaceTools');
+    const found = [];
+    const text = document.getText();
+
+    if (configuration.get('reportNamespaceMismatch', true)) {
+        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+        const psr4 = folder && (await readPsr4(folder));
+        const expected = psr4 && psr4NamespaceFor(vscode.workspace.asRelativePath(document.uri, false), psr4);
+        const declaration = namespaceDeclaration(text);
+
+        if (expected && declaration && declaration.name !== expected) {
+            const diagnostic = new vscode.Diagnostic(
+                rangeOfOffset(document, declaration.index, declaration.name.length),
+                `Namespace does not match its PSR-4 directory. Expected ${expected}.`,
+                vscode.DiagnosticSeverity.Warning,
+            );
+
+            diagnostic.code = NAMESPACE_MISMATCH;
+            diagnostic.source = 'PHP Namespace Tools';
+            found.push(diagnostic);
+        }
+    }
+
+    if (configuration.get('reportUnusedImports', true)) {
+        for (const statement of unusedImports(text)) {
+            const names = statement.entries.map((entry) => entry.alias).join(', ');
+            const diagnostic = new vscode.Diagnostic(
+                rangeOfOffset(document, statement.index, statement.length),
+                `Import is never used: ${names}.`,
+                vscode.DiagnosticSeverity.Hint,
+            );
+
+            diagnostic.code = UNUSED_IMPORT;
+            diagnostic.source = 'PHP Namespace Tools';
+            diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
+            found.push(diagnostic);
+        }
+    }
+
+    diagnostics.set(document.uri, found);
+}
+
+/**
+ * @param {vscode.TextDocument} document
+ * @param {number} index
+ * @param {number} length
+ * @return {vscode.Range}
+ */
+function rangeOfOffset(document, index, length) {
+    return new vscode.Range(document.positionAt(index), document.positionAt(index + length));
+}
+
+/**
+ * The range covering an import statement and the line break after it, so
+ * removing it does not leave a blank line behind.
+ *
+ * @param {vscode.TextDocument} document
+ * @param {{index: number, length: number}} statement
+ * @return {vscode.Range}
+ */
+function importRemovalRange(document, statement) {
+    const range = rangeOfOffset(document, statement.index, statement.length);
+    const line = document.lineAt(range.start.line);
+
+    // Only swallow the line break when the statement is alone on its line;
+    // `use A; use B;` must lose one statement, not the whole line.
+    return line.text.trim() === document.getText(range).trim() ? line.rangeIncludingLineBreak : range;
+}
+
+/** Quick fixes for the diagnostics above, plus Organize Imports. */
+const codeActions = {
+    async provideCodeActions(document, range, context) {
+        const actions = [];
+        const text = document.getText();
+
+        for (const diagnostic of context.diagnostics) {
+            if (diagnostic.code !== NAMESPACE_MISMATCH) {
+                continue;
+            }
+
+            const expected = diagnostic.message.match(/Expected (.+)\.$/)?.[1];
+            const declaration = namespaceDeclaration(text);
+
+            if (!expected || !declaration) {
+                continue;
+            }
+
+            const action = new vscode.CodeAction(
+                `Change namespace to ${expected}`,
+                vscode.CodeActionKind.QuickFix,
+            );
+
+            action.diagnostics = [diagnostic];
+            action.edit = new vscode.WorkspaceEdit();
+            action.edit.replace(document.uri, diagnostic.range, expected);
+
+            const type = typeDeclaration(text);
+
+            if (type) {
+                await updateReferences(
+                    action.edit,
+                    [
+                        {
+                            oldFqn: `${declaration.name}\\${type}`,
+                            newFqn: `${expected}\\${type}`,
+                            oldName: type,
+                            newName: type,
+                        },
+                    ],
+                    { appendLine() {}, show() {} },
+                );
+            }
+
+            actions.push(action);
+        }
+
+        const unused = unusedImports(text);
+
+        if (unused.length > 0) {
+            const organize = new vscode.CodeAction(
+                `Remove ${unused.length} unused import${unused.length === 1 ? '' : 's'}`,
+                vscode.CodeActionKind.SourceOrganizeImports,
+            );
+
+            organize.edit = new vscode.WorkspaceEdit();
+
+            for (const statement of unused) {
+                organize.edit.delete(document.uri, importRemovalRange(document, statement));
+            }
+
+            actions.push(organize);
+        }
+
+        return actions;
+    },
+};
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
     const output = vscode.window.createOutputChannel('PHP Namespace Tools');
+    const diagnostics = vscode.languages.createDiagnosticCollection('phpNamespaceTools');
+    const refresh = (document) => refreshDiagnostics(document, diagnostics);
 
     context.subscriptions.push(
         output,
+        diagnostics,
         vscode.languages.registerCompletionItemProvider({ language: 'php', scheme: 'file' }, provider),
+        vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, codeActions, {
+            providedCodeActionKinds: [
+                vscode.CodeActionKind.QuickFix,
+                vscode.CodeActionKind.SourceOrganizeImports,
+            ],
+        }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
                 event.waitUntil(namespaceUpdatesForMove(event.files, output));
             }
         }),
+        vscode.workspace.onDidOpenTextDocument(refresh),
+        vscode.workspace.onDidSaveTextDocument(refresh),
+        vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
     );
+
+    vscode.workspace.textDocuments.forEach(refresh);
 }
 
 function deactivate() {}
@@ -887,10 +1220,13 @@ module.exports = {
     activate,
     deactivate,
     collectImports,
+    importStatements,
+    isNameUsed,
+    unusedImports,
+    maskLiterals,
     relativize,
     fullyQualifiedName,
     shortName,
-    importRegion,
     psr4NamespaceFor,
     namespaceDeclaration,
     typeDeclaration,

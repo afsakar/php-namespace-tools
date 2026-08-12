@@ -69,6 +69,26 @@ Read the ceiling before relying on it:
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 
+## Diagnostics
+
+Two problems are reported inline, both with a quick fix:
+
+- **A namespace that no longer matches its PSR-4 directory.** Moving a file
+  outside the editor — `git checkout`, `mv`, a merge — raises no rename event,
+  so this is the only thing that catches it. The fix rewrites the declaration
+  and repoints references, exactly as a move does.
+- **An import nothing in the file refers to**, faded out and removable through
+  **Organize Imports** (`Shift+Alt+O`).
+
+Usage is decided textually on masked source: comments and string contents are
+blanked first, and only `use` statements at the top brace level count as
+imports, so a commented-out import is not live and `new class { use Trait; }` is
+not an import. A name is used if it appears anywhere outside the import
+statements, which covers docblock types and attributes sitting above the class.
+
+A group import is only removed when every one of its names is dead; one live
+member leaves the whole statement alone.
+
 ## Settings
 
 | Setting | Default | Meaning |
