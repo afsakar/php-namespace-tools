@@ -31,7 +31,14 @@ Module._resolveFilename = function (request, ...rest) {
     return request === 'vscode' ? stubPath : originalResolve.call(this, request, ...rest);
 };
 
-const { collectImports, relativize, fullyQualifiedName, psr4NamespaceFor } = require('./extension.js');
+const {
+    collectImports,
+    relativize,
+    fullyQualifiedName,
+    shortName,
+    psr4NamespaceFor,
+    namespaceDeclaration,
+} = require('./extension.js');
 
 const source = `<?php
 
@@ -249,5 +256,33 @@ assert.strictEqual(
 
 assert.strictEqual(psr4NamespaceFor('app/Models/User.php', {}), null, 'empty map');
 assert.strictEqual(psr4NamespaceFor('app/Models/User.php', undefined), null, 'missing map');
+
+assert.strictEqual(shortName('Filament\\Forms\\Components\\TextInput'), 'TextInput', 'trailing segment');
+assert.strictEqual(shortName('TextInput'), 'TextInput', 'an unqualified name is its own short name');
+
+// --- namespace declaration -------------------------------------------------
+const declarationIn = (text) => namespaceDeclaration(text);
+
+const simple = declarationIn('<?php\n\nnamespace App\\Models;\n\nclass User {}\n');
+assert.strictEqual(simple.name, 'App\\Models', 'reads the declared namespace');
+assert.strictEqual(
+    '<?php\n\nnamespace App\\Models;\n\nclass User {}\n'.slice(simple.index, simple.index + simple.name.length),
+    'App\\Models',
+    'the reported offset points at the name',
+);
+
+// `indexOf` on the whole match would find this name inside the keyword itself.
+const awkward = declarationIn('<?php\nnamespace space;\n');
+assert.strictEqual(awkward.name, 'space', 'reads a namespace named after part of the keyword');
+assert.strictEqual(
+    '<?php\nnamespace space;\n'.slice(awkward.index, awkward.index + awkward.name.length),
+    'space',
+    'the offset skips the keyword',
+);
+
+const braced = declarationIn('<?php\nnamespace App\\Support {\n}\n');
+assert.strictEqual(braced.name, 'App\\Support', 'handles the braced form');
+
+assert.strictEqual(declarationIn('<?php\n\nreturn [];\n'), null, 'a file with no namespace');
 
 console.log('all assertions passed');

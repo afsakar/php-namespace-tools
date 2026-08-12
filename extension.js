@@ -42,8 +42,10 @@ function collectImports(text) {
     // body excludes `(` so a closure `use (...)` can never start a match.
     const statement = /\buse\s+(function\s+|const\s+)?([^;(]+);/g;
 
+    const region = importRegion(text);
+
     let match;
-    while ((match = statement.exec(importRegion(text))) !== null) {
+    while ((match = statement.exec(region)) !== null) {
         if (match[1]) {
             continue;
         }
@@ -156,6 +158,26 @@ function psr4NamespaceFor(relativePath, psr4) {
     const suffix = remainder ? remainder.split('/').join('\\') : '';
 
     return suffix ? `${namespace}\\${suffix}` : namespace;
+}
+
+/**
+ * Locate the namespace name in a `namespace X;` or `namespace X { }` statement.
+ *
+ * The keyword is captured separately rather than searched for inside the match,
+ * because a namespace may legitimately be called `space` and `indexOf` would
+ * then find it inside the keyword itself.
+ *
+ * @param {string} text
+ * @return {{name: string, index: number}|null} Offset of the name within `text`.
+ */
+function namespaceDeclaration(text) {
+    const match = text.match(/^([ \t]*namespace[ \t]+)([A-Za-z_][A-Za-z0-9_\\]*)/m);
+
+    if (!match) {
+        return null;
+    }
+
+    return { name: match[2], index: match.index + match[1].length };
 }
 
 /**
@@ -296,7 +318,10 @@ const provider = {
             items.push(item);
         }
 
-        return items;
+        // Marked incomplete so VS Code re-queries the symbol provider on every
+        // keystroke. Otherwise it caches this list and filters it locally, and a
+        // longer prefix never reaches the language server.
+        return new vscode.CompletionList(items, true);
     },
 };
 
@@ -404,6 +429,81 @@ async function probeRenameFoundations(output, editor) {
     }
 }
 
+/**
+ * Read the merged PSR-4 map of a workspace folder.
+ *
+ * `autoload` is applied over `autoload-dev` so a prefix declared in both wins
+ * from the non-dev section, matching how composer builds its classmap.
+ *
+ * @param {vscode.WorkspaceFolder} folder
+ * @return {Promise<Object<string, string|string[]>|null>}
+ */
+async function readPsr4(folder) {
+    try {
+        const raw = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, 'composer.json'));
+        const composer = JSON.parse(Buffer.from(raw).toString('utf8'));
+
+        return {
+            ...((composer['autoload-dev'] || {})['psr-4'] || {}),
+            ...((composer.autoload || {})['psr-4'] || {}),
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Rewrite the `namespace` declaration of each PHP file being moved so it keeps
+ * matching its PSR-4 directory.
+ *
+ * The edit targets the old location: VS Code applies it before performing the
+ * rename. Only the moved file itself is touched — imports of it elsewhere in the
+ * project are left alone, and the language server will report them as unresolved.
+ *
+ * @param {ReadonlyArray<{oldUri: vscode.Uri, newUri: vscode.Uri}>} files
+ * @return {Promise<vscode.WorkspaceEdit>}
+ */
+async function namespaceUpdatesForMove(files) {
+    const edit = new vscode.WorkspaceEdit();
+
+    for (const { oldUri, newUri } of files) {
+        if (!newUri.path.endsWith('.php')) {
+            continue;
+        }
+
+        const folder = vscode.workspace.getWorkspaceFolder(newUri) ?? vscode.workspace.getWorkspaceFolder(oldUri);
+
+        if (!folder) {
+            continue;
+        }
+
+        const psr4 = await readPsr4(folder);
+        const target = psr4 && psr4NamespaceFor(vscode.workspace.asRelativePath(newUri, false), psr4);
+
+        if (!target) {
+            continue;
+        }
+
+        const document = await vscode.workspace.openTextDocument(oldUri);
+        const declaration = namespaceDeclaration(document.getText());
+
+        if (!declaration || declaration.name === target) {
+            continue;
+        }
+
+        edit.replace(
+            oldUri,
+            new vscode.Range(
+                document.positionAt(declaration.index),
+                document.positionAt(declaration.index + declaration.name.length),
+            ),
+            target,
+        );
+    }
+
+    return edit;
+}
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
     const output = vscode.window.createOutputChannel('PHP Namespace Tools');
@@ -412,6 +512,11 @@ function activate(context) {
         output,
         vscode.languages.registerCompletionItemProvider({ language: 'php', scheme: 'file' }, provider),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
+        vscode.workspace.onWillRenameFiles((event) => {
+            if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
+                event.waitUntil(namespaceUpdatesForMove(event.files));
+            }
+        }),
     );
 }
 
@@ -423,6 +528,8 @@ module.exports = {
     collectImports,
     relativize,
     fullyQualifiedName,
+    shortName,
     importRegion,
     psr4NamespaceFor,
+    namespaceDeclaration,
 };
