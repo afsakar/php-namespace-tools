@@ -41,6 +41,9 @@ const {
     offsetToPosition,
     typeDeclaration,
     fqnReplacements,
+    bareNameReplacements,
+    resolvesBareName,
+    fileBaseName,
 } = require('./extension.js');
 
 const source = `<?php
@@ -372,5 +375,57 @@ assert.strictEqual(rewrite('$user = new User();'), '$user = new User();', 'the b
 // A doubled-separator occurrence must not also be counted as a single one.
 assert.strictEqual(fqnReplacements('"App\\\\Models\\\\User"', OLD, NEW).length, 1, 'no double counting');
 assert.strictEqual(fqnReplacements('use App\\Models\\User;', OLD, NEW).length, 1, 'one edit per occurrence');
+
+// --- file base name --------------------------------------------------------
+assert.strictEqual(fileBaseName('/app/Models/User.php'), 'User', 'strips the extension');
+assert.strictEqual(fileBaseName('/app/Models/User'), 'User', 'tolerates a missing extension');
+
+// --- bare class name replacement -------------------------------------------
+const bare = (text) => {
+    let result = text;
+    for (const edit of bareNameReplacements(text, 'RichTextBlock', 'RichEditorBlock').reverse()) {
+        result = result.slice(0, edit.index) + edit.replacement + result.slice(edit.index + edit.length);
+    }
+    return result;
+};
+
+assert.strictEqual(bare('RichTextBlock::make()'), 'RichEditorBlock::make()', 'a static call');
+assert.strictEqual(bare('new RichTextBlock()'), 'new RichEditorBlock()', 'instantiation');
+assert.strictEqual(bare('class RichTextBlock extends Base'), 'class RichEditorBlock extends Base', 'the declaration');
+assert.strictEqual(bare('RichTextBlock::class'), 'RichEditorBlock::class', 'a class constant');
+assert.strictEqual(bare('function f(RichTextBlock $b)'), 'function f(RichEditorBlock $b)', 'a type hint');
+
+// Each of these is something else that merely reads the same.
+assert.strictEqual(bare('$RichTextBlock = 1;'), '$RichTextBlock = 1;', 'a variable');
+assert.strictEqual(bare('$this->RichTextBlock'), '$this->RichTextBlock', 'a property');
+assert.strictEqual(bare('Other\\RichTextBlock::make()'), 'Other\\RichTextBlock::make()', 'a qualified name');
+assert.strictEqual(bare("'RichTextBlock'"), "'RichTextBlock'", 'a quoted key');
+assert.strictEqual(bare('"RichTextBlock"'), '"RichTextBlock"', 'a double quoted key');
+assert.strictEqual(bare('RichTextBlockLegacy::make()'), 'RichTextBlockLegacy::make()', 'a longer identifier');
+assert.strictEqual(bare('Config::RichTextBlock'), 'Config::RichTextBlock', 'a class constant of something else');
+
+// --- which files resolve a bare name ---------------------------------------
+const RENAME = { oldFqn: 'App\\Blocks\\RichTextBlock', oldName: 'RichTextBlock' };
+
+assert.strictEqual(
+    resolvesBareName('<?php\nnamespace App\\Pages;\nuse App\\Blocks\\RichTextBlock;\n', RENAME),
+    true,
+    'an unaliased import resolves the bare name',
+);
+assert.strictEqual(
+    resolvesBareName('<?php\nnamespace App\\Blocks;\n', RENAME),
+    true,
+    'the same namespace resolves the bare name without any import',
+);
+assert.strictEqual(
+    resolvesBareName('<?php\nnamespace App\\Pages;\nuse App\\Blocks\\RichTextBlock as Legacy;\n', RENAME),
+    false,
+    'an aliased import leaves the body referring to the alias',
+);
+assert.strictEqual(
+    resolvesBareName('<?php\nnamespace App\\Pages;\nuse App\\Other\\RichTextBlock;\n', RENAME),
+    false,
+    'a same-named class from elsewhere is not the renamed one',
+);
 
 console.log('all assertions passed');

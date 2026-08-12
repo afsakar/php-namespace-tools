@@ -235,6 +235,67 @@ function fqnReplacements(text, oldFqn, newFqn) {
 }
 
 /**
+ * The file name of a URI path, without its `.php` extension.
+ *
+ * @param {string} uriPath
+ * @return {string}
+ */
+function fileBaseName(uriPath) {
+    const name = uriPath.slice(uriPath.lastIndexOf('/') + 1);
+
+    return name.endsWith('.php') ? name.slice(0, -'.php'.length) : name;
+}
+
+/**
+ * Every place a bare class name appears as an identifier, with its replacement.
+ *
+ * Only ever applied to a file that resolves the name to the renamed class:
+ * one that imports it unaliased, declares it, or shares its namespace. Even
+ * there the name is skipped when it touches a quote, so a Filament block key
+ * such as `'RichTextBlock'` is not rewritten along with the class.
+ *
+ * @param {string} text
+ * @param {string} oldName
+ * @param {string} newName
+ * @return {Array<{index: number, length: number, replacement: string}>}
+ */
+function bareNameReplacements(text, oldName, newName) {
+    const pattern = new RegExp(`(?<![A-Za-z0-9_$\\\\>:'"])${oldName}(?![A-Za-z0-9_'"])`, 'g');
+    const edits = [];
+
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+        edits.push({ index: match.index, length: oldName.length, replacement: newName });
+    }
+
+    return edits;
+}
+
+/**
+ * Whether a file resolves a bare class name to the given class.
+ *
+ * True when it imports the class without an alias, or declares its namespace —
+ * PHP resolves an unqualified name against the current namespace. An aliased
+ * import is deliberately excluded: its body refers to the alias, which the
+ * rename must not touch.
+ *
+ * @param {string} text
+ * @param {{oldFqn: string, oldName: string}} rename
+ * @return {boolean}
+ */
+function resolvesBareName(text, rename) {
+    const namespace = rename.oldFqn.slice(0, rename.oldFqn.lastIndexOf('\\'));
+
+    if (namespaceDeclaration(text)?.name === namespace) {
+        return true;
+    }
+
+    return collectImports(text).some(
+        (entry) => entry.fqn === rename.oldFqn && entry.alias === rename.oldName,
+    );
+}
+
+/**
  * Convert a character offset into a zero-based line and character pair.
  *
  * Used to place an edit without opening the file as a text document, which
@@ -642,21 +703,43 @@ async function namespaceUpdatesForMove(files, output) {
         const text = Buffer.from(await vscode.workspace.fs.readFile(oldUri)).toString('utf8');
         const declaration = namespaceDeclaration(text);
 
-        if (!declaration || declaration.name === target) {
+        if (!declaration) {
             continue;
         }
 
-        replaceOffset(edit, oldUri, text, declaration.index, declaration.name.length, target);
-        output.appendLine(`${vscode.workspace.asRelativePath(oldUri, false)}: ${declaration.name} -> ${target}`);
-
         const type = typeDeclaration(text);
+        const oldBase = fileBaseName(oldUri.path);
+        const newBase = fileBaseName(newUri.path);
 
-        if (type) {
-            renames.push({
-                oldFqn: `${declaration.name}\\${type}`,
-                newFqn: `${target}\\${type}`,
-            });
+        // The type is only renamed when it was named after its file, which is
+        // what PSR-4 requires. A file holding a differently named class is
+        // being moved, not renamed.
+        const renamedType = type === oldBase && newBase !== oldBase ? newBase : type;
+        const movedNamespace = declaration.name !== target;
+
+        if (!movedNamespace && renamedType === type) {
+            continue;
         }
+
+        if (movedNamespace) {
+            replaceOffset(edit, oldUri, text, declaration.index, declaration.name.length, target);
+            output.appendLine(`${vscode.workspace.asRelativePath(oldUri, false)}: ${declaration.name} -> ${target}`);
+        }
+
+        if (!type) {
+            continue;
+        }
+
+        if (renamedType !== type) {
+            output.appendLine(`${vscode.workspace.asRelativePath(oldUri, false)}: class ${type} -> ${renamedType}`);
+        }
+
+        renames.push({
+            oldFqn: `${declaration.name}\\${type}`,
+            newFqn: `${target}\\${renamedType}`,
+            oldName: type,
+            newName: renamedType,
+        });
     }
 
     if (renames.length > 0 && configuration.get('updateImportsOnMove', true)) {
@@ -732,8 +815,19 @@ async function updateReferences(edit, renames, output) {
 
         let found = 0;
 
-        for (const { oldFqn, newFqn } of renames) {
-            for (const occurrence of fqnReplacements(text, oldFqn, newFqn)) {
+        for (const rename of renames) {
+            for (const occurrence of fqnReplacements(text, rename.oldFqn, rename.newFqn)) {
+                replaceOffset(edit, uri, text, occurrence.index, occurrence.length, occurrence.replacement);
+                found++;
+            }
+
+            // A renamed class also has to be repointed where the file refers to
+            // it by its bare name, which the fully qualified pass cannot see.
+            if (rename.oldName === rename.newName || !resolvesBareName(text, rename)) {
+                continue;
+            }
+
+            for (const occurrence of bareNameReplacements(text, rename.oldName, rename.newName)) {
                 replaceOffset(edit, uri, text, occurrence.index, occurrence.length, occurrence.replacement);
                 found++;
             }
@@ -780,5 +874,8 @@ module.exports = {
     namespaceDeclaration,
     typeDeclaration,
     fqnReplacements,
+    bareNameReplacements,
+    resolvesBareName,
+    fileBaseName,
     offsetToPosition,
 };

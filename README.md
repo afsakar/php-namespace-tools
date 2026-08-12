@@ -41,8 +41,8 @@ Consequences worth knowing:
 Moving a PHP file changes the namespace PSR-4 requires it to declare. VS Code
 moves the file and leaves the stale declaration behind, so the class stops
 autoloading. This extension rewrites that declaration from the `autoload` and
-`autoload-dev` PSR-4 maps in `composer.json`, then repoints every reference to
-the class across the project.
+`autoload-dev` PSR-4 maps in `composer.json`, renames the class when the file
+name changes, then repoints every reference across the project.
 
 Everything a move rewrites is listed in the **PHP Namespace Tools** output
 channel, and VS Code folds the edits into the same undo step as the move.
@@ -57,9 +57,13 @@ Read the ceiling before relying on it:
   `files.exclude` or `search.exclude` is never visited and keeps a stale import.
 - **Directory moves are handled**, by enumerating the PHP files beneath the
   moved directory. Moves above `maximumFilesPerMove` files are refused outright.
-- **The class name is never changed.** Renaming `Foo.php` to `Bar.php` updates
-  nothing, because rewriting the declaration alone would silently break every
-  caller.
+- **A class is renamed only when it was named after its file.** `Foo.php`
+  holding `class Foo` becomes `class Bar` when renamed to `Bar.php`; a file
+  holding a differently named class is treated as moved, not renamed.
+- **Bare names are rewritten only where they resolve to the renamed class**:
+  files importing it unaliased, declaring it, or sharing its namespace. A name
+  touching a quote is skipped, so a `'RichTextBlock'` key stays put — which also
+  means a class name genuinely stored as a string is left behind.
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 

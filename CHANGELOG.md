@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Rename the declared class when a PHP file is renamed, and repoint references
+  to it — including the bare name used inside files that import it unaliased,
+  declare it, or share its namespace.
+- Act on a rename that leaves the namespace untouched, which was previously
+  skipped because only a namespace change was considered work.
+
 ## 0.4.0
 
 - Repoint references to a moved class across the project: `use` statements,
