@@ -45,6 +45,7 @@ const {
     resolvesBareName,
     fileBaseName,
     qualifiedNameAt,
+    bareNameAt,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,
@@ -691,5 +692,41 @@ assert.ok(relative.result.includes(`HasFactory<Factories${B}ProductFactory>`), '
 // Occurrence scanning must ignore declarations outright.
 const decls = `<?php\nnamespace App${B}Models;\n\nuse Illuminate${B}Support${B}Str;\n\nclass P {}\n`;
 assert.deepStrictEqual(qualifiedNameOccurrences(decls), [], 'namespace and imports are not occurrences');
+
+// --- unqualified name under the cursor -------------------------------------
+const usage = 'public function scopeActive(Builder $query): Model {}';
+
+assert.strictEqual(bareNameAt(usage, usage.indexOf('Builder') + 2).name, 'Builder', 'a parameter type');
+assert.strictEqual(bareNameAt(usage, usage.indexOf('Model') + 2).name, 'Model', 'a return type');
+assert.strictEqual(bareNameAt(usage, usage.indexOf('$query') + 2), null, 'a variable');
+assert.strictEqual(bareNameAt(usage, usage.indexOf('function') + 2), null, 'a lower case keyword');
+
+const qualified = 'new App\\Models\\Product();';
+assert.strictEqual(
+    bareNameAt(qualified, qualified.indexOf('Product') + 2),
+    null,
+    'a segment of a qualified name belongs to the other reader',
+);
+assert.strictEqual(
+    bareNameAt(qualified, qualified.indexOf('App') + 1),
+    null,
+    'the leading segment of a qualified name too',
+);
+
+assert.strictEqual(bareNameAt('$this->Product', 10), null, 'a property');
+assert.strictEqual(bareNameAt('self::Product', 8), null, 'a static member');
+assert.strictEqual(bareNameAt('$Product = 1;', 3), null, 'a variable named like a class');
+
+// PSR-1 requires StudlyCaps, and the rule is what keeps every lower case
+// identifier in the file from raising an offer.
+assert.strictEqual(bareNameAt('return $x;', 2), null, 'return');
+assert.strictEqual(bareNameAt('array $items', 2), null, 'a scalar type name');
+
+const docblockUse = '     * @param Builder $query';
+assert.strictEqual(
+    bareNameAt(docblockUse, docblockUse.indexOf('Builder') + 3).name,
+    'Builder',
+    'inside a docblock, where no language server offers anything',
+);
 
 console.log('all assertions passed');

@@ -56,6 +56,15 @@ shorten it. Exactly one offer is made, decided by what the file already imports:
 A new import is sorted into the existing block, or opens one after the
 `namespace` statement when there is none.
 
+The reverse works too. On an unqualified class name the file does not resolve,
+the lightbulb offers an import per class carrying that name, taken from the
+workspace symbol index. A name already imported, declared in this file, or
+living in this file's own namespace resolves as it stands and is passed over.
+
+To be offered anything the name must begin with an upper case letter, as PSR-1
+requires of a class. Without that rule every lower case identifier in the file
+would raise an offer.
+
 The quick fix acts on the name under the cursor. To do a whole file at once run
 **PHP Namespace Tools: Shorten All Qualified Names**, which applies the same
 decision to every name in document order. A class is imported once however many

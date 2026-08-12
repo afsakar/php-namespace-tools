@@ -282,6 +282,52 @@ function qualifiedNameAt(text, offset) {
 }
 
 /**
+ * The unqualified class name surrounding a character offset, if there is one.
+ *
+ * A name touching a separator belongs to a qualified name and is left to
+ * {@link qualifiedNameAt}. Variables, properties and static members are
+ * excluded by what precedes them.
+ *
+ * The name must begin with an upper case letter. PSR-1 requires that of a
+ * class, and it is what keeps keywords, scalar type names and locals from
+ * raising an offer on nearly every identifier in the file.
+ *
+ * @param {string} text
+ * @param {number} offset
+ * @return {{name: string, index: number, length: number}|null}
+ */
+function bareNameAt(text, offset) {
+    const isNameCharacter = (character) => character !== undefined && /[A-Za-z0-9_]/.test(character);
+
+    let start = Math.min(offset, text.length);
+    let end = start;
+
+    while (isNameCharacter(text[start - 1])) {
+        start--;
+    }
+
+    while (isNameCharacter(text[end])) {
+        end++;
+    }
+
+    const name = text.slice(start, end);
+
+    if (!/^[A-Z][A-Za-z0-9_]*$/.test(name)) {
+        return null;
+    }
+
+    if (text[start - 1] === '\\' || text[end] === '\\') {
+        return null;
+    }
+
+    if (/(\$|->|\?->|::)$/.test(text.slice(Math.max(0, start - 3), start))) {
+        return null;
+    }
+
+    return { name, index: start, length: end - start };
+}
+
+/**
  * Where to insert a `use` statement, and the text to insert there.
  *
  * The new import joins an existing block in alphabetical order. With no block
@@ -693,16 +739,17 @@ const provider = {
  * @type {vscode.CodeActionProvider}
  */
 const shortenProvider = {
-    provideCodeActions(document, range) {
+    provideCodeActions(document, range, context, token) {
         if (!vscode.workspace.getConfiguration('phpNamespaceTools').get('enabled', true)) {
             return undefined;
         }
 
         const text = document.getText();
-        const found = qualifiedNameAt(text, document.offsetAt(range.start));
+        const offset = document.offsetAt(range.start);
+        const found = qualifiedNameAt(text, offset);
 
         if (!found) {
-            return undefined;
+            return importActionsFor(document, text, offset, token);
         }
 
         const span = new vscode.Range(
@@ -794,6 +841,86 @@ async function shortenAll(output) {
         }
         output.show(true);
     }
+}
+
+/**
+ * Offers an import for an unqualified class name the file does not resolve.
+ *
+ * Candidates come from the workspace symbol index, so one offer is made per
+ * class that carries the name. A class already imported, declared in this file,
+ * or living in this file's own namespace needs no import and is passed over.
+ *
+ * @param {vscode.TextDocument} document
+ * @param {string} text
+ * @param {number} offset
+ * @param {vscode.CancellationToken} token
+ * @return {Promise<vscode.CodeAction[]|undefined>}
+ */
+async function importActionsFor(document, text, offset, token) {
+    const found = bareNameAt(text, offset);
+
+    if (!found) {
+        return undefined;
+    }
+
+    const imports = collectImports(text);
+
+    if (imports.some((entry) => entry.alias === found.name) || typeDeclaration(text) === found.name) {
+        return undefined;
+    }
+
+    const symbols = await vscode.commands.executeCommand(
+        'vscode.executeWorkspaceSymbolProvider',
+        found.name,
+    );
+
+    if (token.isCancellationRequested || !Array.isArray(symbols)) {
+        return undefined;
+    }
+
+    const namespace = namespaceDeclaration(text)?.name ?? '';
+    const span = new vscode.Range(
+        document.positionAt(found.index),
+        document.positionAt(found.index + found.length),
+    );
+
+    const candidates = [];
+
+    for (const symbol of symbols) {
+        if (!TYPE_KINDS.has(symbol.kind)) {
+            continue;
+        }
+
+        const fqn = fullyQualifiedName(symbol);
+
+        if (shortName(fqn) !== found.name || candidates.includes(fqn)) {
+            continue;
+        }
+
+        // A class in this file's own namespace already resolves unqualified.
+        if (fqn === `${namespace}\\${found.name}`) {
+            return undefined;
+        }
+
+        candidates.push(fqn);
+    }
+
+    return candidates.sort().map((fqn) => {
+        // Reuse an imported parent namespace rather than adding an import,
+        // which is the spelling the completion provider already produces.
+        const relative = relativize(fqn, imports);
+
+        if (relative) {
+            return shortenAction(document, span, relative, `Use \`${relative}\``);
+        }
+
+        const insertion = importInsertion(text, fqn);
+        const action = shortenAction(document, span, found.name, `Import \`${fqn}\``);
+
+        action.edit.insert(document.uri, document.positionAt(insertion.index), insertion.text);
+
+        return action;
+    });
 }
 
 /**
@@ -1246,6 +1373,7 @@ module.exports = {
     resolvesBareName,
     fileBaseName,
     qualifiedNameAt,
+    bareNameAt,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,

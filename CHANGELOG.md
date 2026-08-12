@@ -2,6 +2,13 @@
 
 ## 0.8.0
 
+- Offer an import on an unqualified class name the file does not resolve, one
+  per candidate found in the workspace symbol index. Where an imported parent
+  namespace already covers the class, the relative spelling is offered instead
+  and no import is added.
+
+## 0.8.0
+
 - Add **Shorten All Qualified Names**, applying the quick fix to every name in a
   file at once. Later names see the imports added for earlier ones, so a class
   whose short name is already claimed stays fully qualified instead of resolving
