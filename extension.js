@@ -20,9 +20,16 @@ const TYPE_KINDS = new Set([
  * @return {string}
  */
 function importRegion(text) {
-    const declaration = text.match(/^[ \t]*(?:(?:abstract|final|readonly)[ \t]+)*(?:class|interface|trait|enum)[ \t]/m);
+    const named = text.match(/^[ \t]*(?:(?:abstract|final|readonly)[ \t]+)*(?:class|interface|trait|enum)[ \t]/m);
 
-    return declaration ? text.slice(0, declaration.index) : text;
+    // An anonymous class opens a body mid-expression, so the line-anchored
+    // match above never sees it and every trait `use` inside would be read as
+    // an import. `new class` is unambiguous enough to cut on directly.
+    const anonymous = text.match(/\bnew[ \t]+class\b/);
+
+    const cuts = [named, anonymous].filter(Boolean).map((match) => match.index);
+
+    return cuts.length > 0 ? text.slice(0, Math.min(...cuts)) : text;
 }
 
 /**
@@ -279,6 +286,78 @@ function qualifiedNameAt(text, offset) {
     }
 
     return { fqn, index: start, length: end - start };
+}
+
+/**
+ * Every removable `use` statement, as whole-line spans.
+ *
+ * A statement is only reported when it occupies its own line, so `use A; use B;`
+ * is left alone: the spans would overlap and removing one would take the other
+ * with it. Group imports are skipped for the same reason — dropping one member
+ * of `use A\{B, C};` means rewriting the statement, not deleting a line.
+ *
+ * @param {string} text
+ * @return {Array<{start: number, end: number, fqn: string, alias: string}>}
+ */
+function importStatements(text) {
+    const statement = /^[ \t]*use[ \t]+([^;(]+);[ \t]*\r?\n/gm;
+    const region = importRegion(text);
+    const found = [];
+
+    let match;
+    while ((match = statement.exec(region)) !== null) {
+        const body = match[1].trim();
+
+        if (body.includes('{') || /^(function|const)\b/.test(body)) {
+            continue;
+        }
+
+        const parsed = collectImports(`<?php use ${body};`);
+
+        if (parsed.length !== 1) {
+            continue;
+        }
+
+        found.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            fqn: parsed[0].fqn,
+            alias: parsed[0].alias,
+        });
+    }
+
+    return found;
+}
+
+/**
+ * The imports whose alias never appears anywhere else in the file.
+ *
+ * The search deliberately counts an alias inside a comment or a string as a
+ * use. The two mistakes are not equal: keeping a redundant import is noise,
+ * while dropping a needed one stops the file compiling, so anything that reads
+ * like a mention keeps the import.
+ *
+ * @param {string} text
+ * @return {Array<{start: number, end: number, fqn: string, alias: string}>}
+ */
+function unusedImports(text) {
+    const statements = importStatements(text);
+
+    // Blank the statements rather than cut them, so the remaining offsets and
+    // therefore the reported spans stay valid.
+    let body = text;
+
+    for (const entry of statements) {
+        body = body.slice(0, entry.start) + ' '.repeat(entry.end - entry.start) + body.slice(entry.end);
+    }
+
+    return statements.filter((entry) => {
+        // A trailing separator is allowed: an alias is also used as the prefix
+        // of a partially qualified name such as `Forms\Components\TextInput`.
+        const usage = new RegExp(`(?<![A-Za-z0-9_$\\\\>:])${entry.alias}(?![A-Za-z0-9_])`);
+
+        return !usage.test(body);
+    });
 }
 
 /**
@@ -1335,6 +1414,45 @@ async function updateReferences(edit, renames, output) {
     output.show(true);
 }
 
+/**
+ * Delete the import statements the active file never refers to.
+ *
+ * @param {vscode.OutputChannel} output
+ */
+async function removeUnusedImports(output) {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor || editor.document.languageId !== 'php') {
+        return;
+    }
+
+    const text = editor.document.getText();
+    const dead = unusedImports(text);
+
+    if (dead.length === 0) {
+        vscode.window.showInformationMessage('PHP Namespace Tools: no unused imports.');
+
+        return;
+    }
+
+    await editor.edit((builder) => {
+        // Back to front, so an earlier span keeps its offsets.
+        for (const entry of [...dead].reverse()) {
+            builder.delete(
+                new vscode.Range(editor.document.positionAt(entry.start), editor.document.positionAt(entry.end)),
+            );
+        }
+    });
+
+    for (const entry of dead) {
+        output.appendLine(`${vscode.workspace.asRelativePath(editor.document.uri, false)}: removed ${entry.fqn}`);
+    }
+
+    vscode.window.showInformationMessage(
+        `PHP Namespace Tools: removed ${dead.length} unused import${dead.length === 1 ? '' : 's'}.`,
+    );
+}
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
     const output = vscode.window.createOutputChannel('PHP Namespace Tools');
@@ -1346,6 +1464,7 @@ function activate(context) {
             providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
         }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
+        vscode.commands.registerCommand('phpNamespaceTools.removeUnusedImports', () => removeUnusedImports(output)),
         vscode.commands.registerCommand('phpNamespaceTools.shortenAll', () => shortenAll(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
@@ -1374,6 +1493,8 @@ module.exports = {
     fileBaseName,
     qualifiedNameAt,
     bareNameAt,
+    importStatements,
+    unusedImports,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,

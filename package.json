@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -47,6 +47,10 @@
             {
                 "command": "phpNamespaceTools.shortenAll",
                 "title": "PHP Namespace Tools: Shorten All Qualified Names"
+            },
+            {
+                "command": "phpNamespaceTools.removeUnusedImports",
+                "title": "PHP Namespace Tools: Remove Unused Imports"
             }
         ],
         "configuration": {

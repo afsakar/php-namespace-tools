@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0
+
+- Add a command that removes the imports a file never refers to. A mention in a
+  comment or a string counts as a use, since deleting a needed import costs more
+  than keeping a redundant one.
+- Stop reading a trait `use` inside an anonymous class body as an import. The
+  region scan was line anchored, so `new class` opening a body mid-expression
+  went unnoticed and its trait uses were parsed as imports — one of which this
+  new command would then have offered to delete.
+
 ## 0.8.0
 
 - Offer an import on an unqualified class name the file does not resolve, one

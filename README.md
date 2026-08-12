@@ -73,6 +73,23 @@ one takes it while the rest are left fully qualified and listed in the output
 channel — importing both would leave the file compiling with one of the names
 resolving to the wrong class.
 
+## Remove unused imports
+
+**PHP Namespace Tools: Remove Unused Imports** deletes the `use` statements the
+open file never refers to.
+
+The search is deliberately reluctant. An alias mentioned in a comment or inside
+a string counts as used, because the two mistakes are not equal: keeping a
+redundant import is noise, while deleting a needed one stops the file
+compiling. For the same reason three shapes are never touched:
+
+- two statements sharing a line, whose spans would overlap
+- group imports, where dropping one member means rewriting the statement
+- `use function` and `use const`, a separate resolution space
+
+Usages inside docblocks, attributes, `implements` clauses and trait `use`
+statements all count, including inside an anonymous class body.
+
 ## Namespace on move
 
 Moving a PHP file changes the namespace PSR-4 requires it to declare. VS Code

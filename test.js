@@ -46,6 +46,8 @@ const {
     fileBaseName,
     qualifiedNameAt,
     bareNameAt,
+    importStatements,
+    unusedImports,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,
@@ -727,6 +729,99 @@ assert.strictEqual(
     bareNameAt(docblockUse, docblockUse.indexOf('Builder') + 3).name,
     'Builder',
     'inside a docblock, where no language server offers anything',
+);
+
+// --- unused imports --------------------------------------------------------
+const SEP = String.fromCharCode(92);
+const withUnused = [
+    '<?php', '',
+    `namespace App${SEP}Models;`, '',
+    `use App${SEP}Enums${SEP}Status;`,
+    `use Illuminate${SEP}Database${SEP}Eloquent${SEP}Model;`,
+    `use Illuminate${SEP}Database${SEP}Eloquent${SEP}Factories${SEP}HasFactory;`,
+    `use Illuminate${SEP}Support${SEP}Carbon;`,
+    `use Filament${SEP}Forms;`,
+    `use App${SEP}Contracts${SEP}Sluggable as Slug;`,
+    `use App${SEP}Enums${SEP}Unused;`, '',
+    'class Product extends Model',
+    '{',
+    '    use HasFactory;', '',
+    '    #[ObservedBy(Status::class)]',
+    `    public array $schema = [Forms${SEP}Components${SEP}TextInput::class];`, '',
+    '    /** @var Slug|null */',
+    '    public $slug;', '',
+    '    // Carbon is mentioned only here',
+    '}', ''].join('\n');
+
+const dead = unusedImports(withUnused).map((entry) => entry.alias);
+
+assert.deepStrictEqual(dead, ['Unused'], 'only the genuinely unreferenced import is reported');
+
+const kept = (alias, why) =>
+    assert.ok(!dead.includes(alias), `${alias} is kept: ${why}`);
+
+kept('Model', 'used in an extends clause');
+kept('HasFactory', 'used by a trait use inside the class body');
+kept('Status', 'used inside an attribute');
+kept('Forms', 'used as the prefix of a partially qualified name');
+kept('Slug', 'used only in a docblock, which no language server reads');
+kept('Carbon', 'mentioned only in a comment, and guessing wrong here breaks the file');
+
+// Whole-line spans, so removal cannot leave a fragment behind.
+const [only] = unusedImports(withUnused);
+assert.strictEqual(
+    withUnused.slice(only.start, only.end),
+    `use App${SEP}Enums${SEP}Unused;` + '\n',
+    'the span covers the entire line including its terminator',
+);
+assert.strictEqual(
+    withUnused.slice(0, only.start) + withUnused.slice(only.end),
+    withUnused.replace(`use App${SEP}Enums${SEP}Unused;` + '\n', ''),
+    'removing the span leaves the rest of the file intact',
+);
+
+// Shapes that must never be offered for removal.
+assert.deepStrictEqual(
+    importStatements(`<?php\nuse A${SEP}B; use C${SEP}D;\n\nclass X {}\n`).map((e) => e.alias),
+    [],
+    'two statements sharing a line are left alone',
+);
+assert.deepStrictEqual(
+    importStatements(`<?php\nuse A${SEP}{B, C};\n\nclass X {}\n`).map((e) => e.alias),
+    [],
+    'a group import would need rewriting, not deleting',
+);
+assert.deepStrictEqual(
+    importStatements(`<?php\nuse function A${SEP}b;\nuse const A${SEP}C;\n\nclass X {}\n`).map((e) => e.alias),
+    [],
+    'function and const imports are a separate resolution space',
+);
+
+// An anonymous class opens a body mid-expression. Taken from a real Pest test
+// that returned `new class($a, $b) { use InteractsWithAuditDiffs; ... }`, where
+// the trait use was read as an import and reported as unused — removing it
+// would have deleted a trait the class depends on.
+const anonymous = [
+    '<?php', '',
+    `use Afsakar${SEP}FilamentAuditingPlugin${SEP}Concerns${SEP}InteractsWithAuditDiffs;`,
+    `use OwenIt${SEP}Auditing${SEP}Models${SEP}Audit;`, '',
+    'function makeHarness(?Audit $selected = null): object',
+    '{',
+    '    return new class($selected)',
+    '    {',
+    '        use InteractsWithAuditDiffs;',
+    '    };',
+    '}', ''].join('\n');
+
+assert.deepStrictEqual(
+    collectImports(anonymous).map((entry) => entry.alias),
+    ['InteractsWithAuditDiffs', 'Audit'],
+    'a trait use inside an anonymous class is not an import',
+);
+assert.deepStrictEqual(
+    unusedImports(anonymous).map((entry) => entry.alias),
+    [],
+    'and the trait it names counts as using the import',
 );
 
 console.log('all assertions passed');
