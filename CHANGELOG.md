@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2
+
+- Fix the language server never starting. Declaring the stdio transport makes
+  the client append a `--stdio` flag to the server's arguments, which Phpactor
+  rejects with its usage text and exits, so no connection was ever created.
+- Log the exact command used to spawn the server, since a server refusing its
+  arguments is otherwise invisible from the extension side.
+
 ## 0.9.1
 
 - Fix the language client crashing on startup with

@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.9.1",
+    "version": "0.9.2",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {

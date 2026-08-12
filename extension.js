@@ -1336,10 +1336,9 @@ async function startLanguageServer(context, output) {
     // Required lazily so a missing dependency degrades to "no server" rather
     // than stopping the rest of the extension from activating.
     let LanguageClient;
-    let TransportKind;
 
     try {
-        ({ LanguageClient, TransportKind } = require('vscode-languageclient/node'));
+        ({ LanguageClient } = require('vscode-languageclient/node'));
     } catch (error) {
         output.appendLine(`language server unavailable: ${error.message}`);
 
@@ -1359,19 +1358,22 @@ async function startLanguageServer(context, output) {
 
     const server = vscode.Uri.joinPath(context.extensionUri, 'server', 'phpactor.phar').fsPath;
 
-    // No outputChannel is passed: the client logs through a LogOutputChannel,
-    // which a plain OutputChannel cannot stand in for. It creates its own.
+    const args = [server, 'language-server'];
+
+    output.appendLine(`spawning: ${php.command} ${args.join(' ')}`);
+
+    // `transport` is deliberately unset. Stating it makes the client append a
+    // matching flag to the server's arguments — `--stdio` here — which Phpactor
+    // rejects, printing its usage and exiting before a connection exists. Stdio
+    // is what an Executable uses anyway.
+    //
+    // No outputChannel is passed either: the client logs through a
+    // LogOutputChannel, which a plain OutputChannel cannot stand in for.
     const client = new LanguageClient(
         'phpNamespaceTools.phpactor',
         'Phpactor',
-        {
-            command: php.command,
-            args: [server, 'language-server'],
-            transport: TransportKind.stdio,
-        },
-        {
-            documentSelector: [{ scheme: 'file', language: 'php' }],
-        },
+        { command: php.command, args },
+        { documentSelector: [{ scheme: 'file', language: 'php' }] },
     );
 
     try {
