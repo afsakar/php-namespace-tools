@@ -42,6 +42,8 @@ const {
     shortName,
     psr4NamespaceFor,
     psr4DirectoryFor,
+    phpVersionOf,
+    supportsLanguageServer,
     namespaceDeclaration,
     offsetToPosition,
     typeDeclaration,
@@ -770,5 +772,22 @@ for (const namespace of ['App', 'App\\Models', 'App\\Filament\\PageBlocks\\Gener
         `round trip for ${namespace}`,
     );
 }
+
+// --- PHP version gate ------------------------------------------------------
+assert.deepStrictEqual(
+    phpVersionOf('PHP 8.4.23 (cli) (built: Jul  6 2026 06:39:02) (NTS clang 15.0.0)'),
+    { major: 8, minor: 4 },
+    'reads the version from php -v',
+);
+assert.deepStrictEqual(phpVersionOf('PHP 8.1.0 (cli)'), { major: 8, minor: 1 }, 'the oldest supported release');
+assert.strictEqual(phpVersionOf('bash: php: command not found'), null, 'output that is not a version');
+assert.strictEqual(phpVersionOf(''), null, 'no output at all');
+
+assert.strictEqual(supportsLanguageServer({ major: 8, minor: 4 }), true, '8.4 runs the server');
+assert.strictEqual(supportsLanguageServer({ major: 8, minor: 1 }), true, '8.1 is the floor');
+assert.strictEqual(supportsLanguageServer({ major: 8, minor: 0 }), false, '8.0 is too old');
+assert.strictEqual(supportsLanguageServer({ major: 7, minor: 4 }), false, '7.4 is too old');
+assert.strictEqual(supportsLanguageServer({ major: 9, minor: 0 }), true, 'a future major still counts');
+assert.strictEqual(supportsLanguageServer(null), false, 'an unreadable version is not usable');
 
 console.log('all assertions passed');

@@ -1231,6 +1231,73 @@ async function renameClassCommand(output) {
     await performMove([{ oldUri: context.document.uri, newUri }], output);
 }
 
+/**
+ * Where a PHP binary is likely to be when it is not on PATH.
+ *
+ * VS Code launched from the Dock does not inherit a login shell, so a PHP
+ * installed by Herd or Homebrew is often invisible to `php` alone.
+ */
+const PHP_CANDIDATES = [
+    '~/Library/Application Support/Herd/bin/php',
+    '/opt/homebrew/bin/php',
+    '/usr/local/bin/php',
+    '/usr/bin/php',
+];
+
+/**
+ * Parse the version out of `php -v` output.
+ *
+ * @param {string} output
+ * @return {{major: number, minor: number}|null}
+ */
+function phpVersionOf(output) {
+    const match = output.match(/^PHP (\d+)\.(\d+)/);
+
+    return match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
+}
+
+/**
+ * Whether a PHP version can run the bundled language server.
+ *
+ * @param {{major: number, minor: number}|null} version
+ * @return {boolean}
+ */
+function supportsLanguageServer(version) {
+    return Boolean(version) && (version.major > 8 || (version.major === 8 && version.minor >= 1));
+}
+
+/**
+ * The first PHP that exists and is new enough, preferring the configured one.
+ *
+ * @param {string} configured
+ * @return {Promise<{command: string, version: {major: number, minor: number}}|null>}
+ */
+async function resolvePhp(configured) {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const home = require('os').homedir();
+    const run = promisify(execFile);
+
+    for (const candidate of [configured, ...PHP_CANDIDATES.map((path) => path.replace(/^~/, home))]) {
+        if (!candidate) {
+            continue;
+        }
+
+        try {
+            const { stdout } = await run(candidate, ['-v'], { timeout: 10000 });
+            const version = phpVersionOf(stdout);
+
+            if (supportsLanguageServer(version)) {
+                return { command: candidate, version };
+            }
+        } catch {
+            // Not here, or not runnable. Try the next one.
+        }
+    }
+
+    return null;
+}
+
 /** Extensions that also run a PHP language server, and so would double up. */
 const COMPETING_LANGUAGE_SERVERS = [
     ['bmewburn.vscode-intelephense-client', 'PHP Intelephense'],
@@ -1279,26 +1346,40 @@ async function startLanguageServer(context, output) {
         return null;
     }
 
+    const php = await resolvePhp(configuration.get('phpPath', 'php'));
+
+    if (!php) {
+        vscode.window.showErrorMessage(
+            'No PHP 8.1 or newer was found. Set phpNamespaceTools.phpPath to your PHP executable.',
+        );
+        output.appendLine(`no usable PHP among: ${[configuration.get('phpPath', 'php'), ...PHP_CANDIDATES].join(', ')}`);
+
+        return null;
+    }
+
     const server = vscode.Uri.joinPath(context.extensionUri, 'server', 'phpactor.phar').fsPath;
+
+    // No outputChannel is passed: the client logs through a LogOutputChannel,
+    // which a plain OutputChannel cannot stand in for. It creates its own.
     const client = new LanguageClient(
         'phpNamespaceTools.phpactor',
         'Phpactor',
         {
-            command: configuration.get('phpPath', 'php'),
+            command: php.command,
             args: [server, 'language-server'],
             transport: TransportKind.stdio,
         },
         {
             documentSelector: [{ scheme: 'file', language: 'php' }],
-            outputChannel: output,
         },
     );
 
     try {
         await client.start();
-        output.appendLine(`Phpactor started from ${server}`);
+        output.appendLine(`Phpactor started with PHP ${php.version.major}.${php.version.minor} at ${php.command}`);
     } catch (error) {
         vscode.window.showErrorMessage(`Could not start Phpactor: ${error.message}`);
+        output.appendLine(`start failed: ${error.stack ?? error.message}`);
 
         return null;
     }
@@ -1525,6 +1606,8 @@ module.exports = {
     shortName,
     psr4NamespaceFor,
     psr4DirectoryFor,
+    phpVersionOf,
+    supportsLanguageServer,
     namespaceDeclaration,
     typeDeclaration,
     fqnReplacements,

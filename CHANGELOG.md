@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1
+
+- Fix the language client crashing on startup with
+  `this.outputChannel.error is not a function`. It logs through a
+  LogOutputChannel, which a plain OutputChannel cannot stand in for.
+- Find PHP rather than trusting PATH. VS Code launched from the Dock inherits
+  no login shell, so Herd and Homebrew installs are invisible to `php` alone;
+  known locations are now tried and the version checked before starting.
+
 ## 0.9.0
 
 - Bundle Phpactor and start it as a language server when

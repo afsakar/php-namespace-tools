@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.9.0",
+    "version": "0.9.1",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -117,7 +117,7 @@
                 "phpNamespaceTools.phpPath": {
                     "type": "string",
                     "default": "php",
-                    "description": "PHP executable used to run the bundled language server. Must be PHP 8.1 or newer.",
+                    "description": "PHP executable used to run the bundled language server. Must be PHP 8.1 or newer. When it cannot be run, Herd and Homebrew locations are tried, since VS Code launched from the Dock does not inherit a login shell PATH.",
                     "scope": "window"
                 }
             }
