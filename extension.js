@@ -1,5 +1,11 @@
 const vscode = require('vscode');
 
+/** Documents this extension acts on. Blade templates carry PHP names too. */
+const PHP_DOCUMENTS = [
+    { language: 'php', scheme: 'file' },
+    { language: 'blade', scheme: 'file' },
+];
+
 /** Symbol kinds that can legally appear as a type reference in PHP source. */
 const TYPE_KINDS = new Set([
     vscode.SymbolKind.Class,
@@ -89,6 +95,110 @@ function addImport(imports, declaration) {
         fqn,
         alias: aliased ? aliased[2] : fqn.split('\\').pop(),
     });
+}
+
+/**
+ * Parse the `@use` directives of a Blade template.
+ *
+ * Mirrors Laravel's own compiler: parentheses are stripped, quotes and spaces
+ * trimmed, a second comma-separated segment is the alias, and a `{` marks a
+ * group. `@use('function ...')` and `@use('const ...')` name a different
+ * resolution space and are skipped, as they are in PHP.
+ *
+ * @param {string} text
+ * @return {Array<{fqn: string, alias: string}>}
+ */
+function bladeImports(text) {
+    const directive = /@use\s*\(([^)]*)\)/g;
+    const imports = [];
+
+    let match;
+    while ((match = directive.exec(text)) !== null) {
+        const expression = match[1].replace(/[()]/g, '').trim().replace(/^['"]+|['"]+$/g, '');
+
+        if (expression.includes('{')) {
+            const group = expression.match(/^(.+?)\\\{(.+)\}$/s);
+
+            if (group) {
+                for (const member of group[2].split(',')) {
+                    addImport(imports, `${group[1]}\\${member.trim()}`);
+                }
+            }
+
+            continue;
+        }
+
+        const [path, alias] = expression.split(',').map((part) => part.trim().replace(/^['"]+|['"]+$/g, ''));
+
+        if (!path || /^(function|const)\s/.test(path)) {
+            continue;
+        }
+
+        addImport(imports, alias ? `${path} as ${alias}` : path);
+    }
+
+    return imports;
+}
+
+/**
+ * Every import a document declares, in whichever syntax its language uses.
+ *
+ * A Blade template may carry both `@use(...)` directives and plain `use`
+ * statements inside a `@php` block, so both are read.
+ *
+ * @param {string} text
+ * @param {string} languageId
+ * @return {Array<{fqn: string, alias: string}>}
+ */
+function importsOf(text, languageId) {
+    return languageId === 'blade' ? [...collectImports(text), ...bladeImports(text)] : collectImports(text);
+}
+
+/**
+ * Where to add a `@use` directive to a Blade template, and the text to add.
+ *
+ * New directives join the existing run in alphabetical order, matching how the
+ * PHP side sorts an import block. With none to join the directive opens the
+ * file, which is where Laravel's own documentation puts it.
+ *
+ * @param {string} text
+ * @param {string} fqn
+ * @return {{index: number, text: string}}
+ */
+function bladeImportInsertion(text, fqn) {
+    const directive = /@use\s*\(([^)]*)\)[ \t]*\r?\n?/g;
+    const existing = [];
+
+    let match;
+    while ((match = directive.exec(text)) !== null) {
+        existing.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            name: match[1].replace(/[()]/g, '').trim().replace(/^['"]+|['"]+$/g, ''),
+        });
+    }
+
+    const line = `@use('${fqn}')\n`;
+
+    if (existing.length === 0) {
+        return { index: 0, text: line };
+    }
+
+    const successor = existing.find((entry) => entry.name > fqn);
+
+    return { index: successor ? successor.start : existing[existing.length - 1].end, text: line };
+}
+
+/**
+ * Where to add an import to a document, in whichever syntax its language uses.
+ *
+ * @param {string} text
+ * @param {string} fqn
+ * @param {string} languageId
+ * @return {{index: number, text: string}}
+ */
+function insertionFor(text, fqn, languageId) {
+    return languageId === 'blade' ? bladeImportInsertion(text, fqn) : importInsertion(text, fqn);
 }
 
 /**
@@ -791,7 +901,7 @@ const provider = {
             return undefined;
         }
 
-        const imports = collectImports(document.getText());
+        const imports = importsOf(document.getText(), document.languageId);
         const namespace = namespaceDeclaration(document.getText())?.name ?? null;
 
         if (imports.length === 0 && !namespace) {
@@ -887,7 +997,7 @@ const shortenProvider = {
             document.positionAt(found.index + found.length),
         );
 
-        const imports = collectImports(text);
+        const imports = importsOf(text, document.languageId);
         const direct = imports.find((entry) => entry.fqn === found.fqn);
 
         if (direct) {
@@ -906,7 +1016,7 @@ const shortenProvider = {
             return undefined;
         }
 
-        const insertion = importInsertion(text, found.fqn);
+        const insertion = insertionFor(text, found.fqn, document.languageId);
         const action = shortenAction(document, span, short, `Import \`${found.fqn}\``);
 
         action.edit.insert(document.uri, document.positionAt(insertion.index), insertion.text);
@@ -993,7 +1103,7 @@ async function importActionsFor(document, text, offset, token) {
         return undefined;
     }
 
-    const imports = collectImports(text);
+    const imports = importsOf(text, document.languageId);
 
     if (imports.some((entry) => entry.alias === found.name) || typeDeclaration(text) === found.name) {
         return undefined;
@@ -1044,7 +1154,7 @@ async function importActionsFor(document, text, offset, token) {
             return shortenAction(document, span, relative, `Use \`${relative}\``);
         }
 
-        const insertion = importInsertion(text, fqn);
+        const insertion = insertionFor(text, fqn, document.languageId);
         const action = shortenAction(document, span, found.name, `Import \`${fqn}\``);
 
         action.edit.insert(document.uri, document.positionAt(insertion.index), insertion.text);
@@ -1652,8 +1762,8 @@ function activate(context) {
 
     context.subscriptions.push(
         output,
-        vscode.languages.registerCompletionItemProvider({ language: 'php', scheme: 'file' }, provider),
-        vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, shortenProvider, {
+        vscode.languages.registerCompletionItemProvider(PHP_DOCUMENTS, provider),
+        vscode.languages.registerCodeActionsProvider(PHP_DOCUMENTS, shortenProvider, {
             providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
         }),
         vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, namespaceFixProvider, {
@@ -1691,6 +1801,9 @@ module.exports = {
     bareNameAt,
     importStatements,
     unusedImports,
+    bladeImports,
+    bladeImportInsertion,
+    importsOf,
     namespaceRelative,
     shortestRelative,
     importInsertion,

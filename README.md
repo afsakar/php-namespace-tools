@@ -81,6 +81,26 @@ one takes it while the rest are left fully qualified and listed in the output
 channel — importing both would leave the file compiling with one of the names
 resolving to the wrong class.
 
+## Blade templates
+
+The completion and both quick fixes work in Blade templates as well, using the
+`@use` directive Laravel 11 introduced rather than a PHP `use` statement:
+
+```blade
+@use('App\Enums\Status')
+
+<span>{{ Status::Active->label() }}</span>
+```
+
+Existing directives are read in every spelling Laravel's own compiler accepts —
+quoted or bare, with an alias as a second argument, and the group form. A `@php`
+block's plain `use` statements count as imports too. A new directive joins the
+existing run in alphabetical order, or opens the file when there is none.
+
+The `@use` tag inside a PHP docblock is never mistaken for a directive.
+
+Removing unused imports and the PSR-4 check stay PHP only.
+
 ## Remove unused imports
 
 **PHP Namespace Tools: Remove Unused Imports** deletes the `use` statements the

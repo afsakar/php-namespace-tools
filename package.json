@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.12.0",
+    "version": "0.13.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -31,7 +31,8 @@
         "phpstorm"
     ],
     "activationEvents": [
-        "onLanguage:php"
+        "onLanguage:php",
+        "onLanguage:blade"
     ],
     "main": "./extension.js",
     "scripts": {

@@ -48,6 +48,9 @@ const {
     bareNameAt,
     importStatements,
     unusedImports,
+    bladeImports,
+    bladeImportInsertion,
+    importsOf,
     namespaceRelative,
     shortestRelative,
     importInsertion,
@@ -890,6 +893,89 @@ assert.strictEqual(
     shortestRelative(`Database${SEP}Seeders${SEP}Corporate${SEP}ProductSeeder`, seederImports2, `Database${SEP}Seeders`),
     `Corporate${SEP}ProductSeeder`,
     'the namespace is used when no import covers the class',
+);
+
+// --- Blade @use directives -------------------------------------------------
+// Every spelling Laravel's CompilesUseStatements accepts.
+const blade = [
+    `@use('App${SEP}Enums${SEP}Status')`,
+    `@use(App${SEP}Models${SEP}User)`,
+    `@use('App${SEP}Contracts${SEP}Sluggable', 'Slug')`,
+    `@use('Illuminate${SEP}Support${SEP}{Str, Collection}')`,
+    `@use('function App${SEP}Helpers${SEP}money')`,
+    `@use('const App${SEP}SOME_FLAG')`,
+    '',
+    '<div>{{ Status::Active->label() }}</div>',
+].join('\n');
+
+const bladeParsed = bladeImports(blade);
+const bladeAlias = (alias) => bladeParsed.find((entry) => entry.alias === alias);
+
+assert.deepStrictEqual(bladeAlias('Status'), { fqn: `App${SEP}Enums${SEP}Status`, alias: 'Status' }, 'quoted');
+assert.deepStrictEqual(bladeAlias('User'), { fqn: `App${SEP}Models${SEP}User`, alias: 'User' }, 'unquoted');
+assert.deepStrictEqual(
+    bladeAlias('Slug'),
+    { fqn: `App${SEP}Contracts${SEP}Sluggable`, alias: 'Slug' },
+    'the second segment is an alias',
+);
+assert.deepStrictEqual(bladeAlias('Str'), { fqn: `Illuminate${SEP}Support${SEP}Str`, alias: 'Str' }, 'group member');
+assert.deepStrictEqual(
+    bladeAlias('Collection'),
+    { fqn: `Illuminate${SEP}Support${SEP}Collection`, alias: 'Collection' },
+    'second group member',
+);
+assert.strictEqual(bladeParsed.length, 5, 'function and const directives are skipped');
+
+// A Blade file may carry both syntaxes.
+const mixed = [
+    `@use('App${SEP}Enums${SEP}Status')`,
+    '@php',
+    `use App${SEP}Models${SEP}User;`,
+    '@endphp',
+].join('\n');
+
+assert.deepStrictEqual(
+    importsOf(mixed, 'blade').map((entry) => entry.alias).sort(),
+    ['Status', 'User'],
+    'a @php block and a @use directive are both imports',
+);
+
+// A PHP docblock generic must never be read as a Blade directive.
+assert.deepStrictEqual(
+    importsOf(`<?php${String.fromCharCode(10)}/** @use HasFactory<${SEP}Db${SEP}F> */${String.fromCharCode(10)}`, 'php'),
+    [],
+    'the docblock @use tag is not a directive',
+);
+
+// --- where a @use directive goes -------------------------------------------
+const bladeBlock = [
+    `@use('App${SEP}Enums${SEP}Status')`,
+    `@use('Illuminate${SEP}Support${SEP}Str')`,
+    '',
+    '<div></div>',
+    '',
+].join('\n');
+
+const intoBladeBlock = bladeImportInsertion(bladeBlock, `App${SEP}Models${SEP}User`);
+assert.strictEqual(
+    bladeBlock.slice(0, intoBladeBlock.index) + intoBladeBlock.text + bladeBlock.slice(intoBladeBlock.index),
+    [
+        `@use('App${SEP}Enums${SEP}Status')`,
+        `@use('App${SEP}Models${SEP}User')`,
+        `@use('Illuminate${SEP}Support${SEP}Str')`,
+        '',
+        '<div></div>',
+        '',
+    ].join('\n'),
+    'sorts into the existing run of directives',
+);
+
+const bladeEmpty = '<div>{{ $x }}</div>\n';
+const opensBlade = bladeImportInsertion(bladeEmpty, `App${SEP}Enums${SEP}Status`);
+assert.strictEqual(
+    bladeEmpty.slice(0, opensBlade.index) + opensBlade.text + bladeEmpty.slice(opensBlade.index),
+    `@use('App${SEP}Enums${SEP}Status')\n<div>{{ $x }}</div>\n`,
+    'opens the file when there is nothing to join',
 );
 
 console.log('all assertions passed');

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0
+
+- Offer completion and both quick fixes in Blade templates, adding imports as
+  `@use('...')` directives. Existing directives are parsed the way Laravel's
+  compiler parses them, and a `@php` block's `use` statements count as imports.
+
 ## 0.12.0
 
 - Drop `$` from `editor.wordSeparators` for PHP and Blade, so double clicking a
