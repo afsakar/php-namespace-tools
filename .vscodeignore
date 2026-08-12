@@ -3,3 +3,4 @@
 .vscodeignore
 test.js
 *.vsix
+node_modules/.bin/**

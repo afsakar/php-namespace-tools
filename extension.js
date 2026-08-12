@@ -1231,6 +1231,81 @@ async function renameClassCommand(output) {
     await performMove([{ oldUri: context.document.uri, newUri }], output);
 }
 
+/** Extensions that also run a PHP language server, and so would double up. */
+const COMPETING_LANGUAGE_SERVERS = [
+    ['bmewburn.vscode-intelephense-client', 'PHP Intelephense'],
+    ['DEVSENSE.phptools-vscode', 'PHP Tools'],
+    ['williambrook.phpactor', 'Phpactor'],
+];
+
+/**
+ * Start the bundled Phpactor as a language server, when asked to.
+ *
+ * Off by default: this extension is otherwise a companion to whichever server
+ * you already run, and starting a second one produces duplicate completions
+ * and conflicting diagnostics.
+ *
+ * @param {vscode.ExtensionContext} context
+ * @param {vscode.OutputChannel} output
+ * @return {Promise<{stop: () => Promise<void>}|null>}
+ */
+async function startLanguageServer(context, output) {
+    const configuration = vscode.workspace.getConfiguration('phpNamespaceTools');
+
+    if (configuration.get('languageServer', 'off') !== 'phpactor') {
+        return null;
+    }
+
+    const competing = COMPETING_LANGUAGE_SERVERS.filter(([id]) => vscode.extensions.getExtension(id)?.isActive).map(
+        ([, name]) => name,
+    );
+
+    if (competing.length > 0) {
+        vscode.window.showWarningMessage(
+            `${competing.join(' and ')} ${competing.length === 1 ? 'is' : 'are'} also running a PHP language server. Disable ${competing.length === 1 ? 'it' : 'them'} for this workspace, or set phpNamespaceTools.languageServer to "off".`,
+        );
+    }
+
+    // Required lazily so a missing dependency degrades to "no server" rather
+    // than stopping the rest of the extension from activating.
+    let LanguageClient;
+    let TransportKind;
+
+    try {
+        ({ LanguageClient, TransportKind } = require('vscode-languageclient/node'));
+    } catch (error) {
+        output.appendLine(`language server unavailable: ${error.message}`);
+
+        return null;
+    }
+
+    const server = vscode.Uri.joinPath(context.extensionUri, 'server', 'phpactor.phar').fsPath;
+    const client = new LanguageClient(
+        'phpNamespaceTools.phpactor',
+        'Phpactor',
+        {
+            command: configuration.get('phpPath', 'php'),
+            args: [server, 'language-server'],
+            transport: TransportKind.stdio,
+        },
+        {
+            documentSelector: [{ scheme: 'file', language: 'php' }],
+            outputChannel: output,
+        },
+    );
+
+    try {
+        await client.start();
+        output.appendLine(`Phpactor started from ${server}`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Could not start Phpactor: ${error.message}`);
+
+        return null;
+    }
+
+    return client;
+}
+
 /** Marks a diagnostic this extension knows how to fix. */
 const NAMESPACE_MISMATCH = 'phpNamespaceTools.namespaceMismatch';
 const UNUSED_IMPORT = 'phpNamespaceTools.unusedImport';
@@ -1387,6 +1462,9 @@ const codeActions = {
     },
 };
 
+/** The running language server, when one was started. */
+let languageServer = null;
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
     const output = vscode.window.createOutputChannel('PHP Namespace Tools');
@@ -1421,9 +1499,18 @@ function activate(context) {
     );
 
     vscode.workspace.textDocuments.forEach(refresh);
+
+    startLanguageServer(context, output).then((client) => {
+        languageServer = client;
+    });
 }
 
-function deactivate() {}
+async function deactivate() {
+    if (languageServer) {
+        await languageServer.stop();
+        languageServer = null;
+    }
+}
 
 module.exports = {
     activate,

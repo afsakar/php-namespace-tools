@@ -69,6 +69,26 @@ Read the ceiling before relying on it:
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 
+## Bundled language server
+
+By default this extension is a companion: it rides whichever PHP language
+server you already run and starts none of its own.
+
+Setting `phpNamespaceTools.languageServer` to `phpactor` starts the bundled
+[Phpactor](https://phpactor.readthedocs.io), which ships inside the extension —
+nothing to install beyond PHP 8.1 or newer on your PATH.
+
+Before switching, know what Phpactor does and does not answer:
+
+| | |
+| --- | --- |
+| Provides | completion, hover, go to definition and implementation, find references, rename, document and workspace symbols, signature help, code actions, diagnostics |
+| Does not provide | **document formatting** — format on save stops working unless you configure another formatter, such as running Pint |
+
+**Disable every other PHP language server first.** Two servers answering the
+same requests produce duplicate completions and conflicting diagnostics; the
+extension warns if it detects one, but cannot disable it for you.
+
 ## Commands
 
 - **PHP Namespace Tools: Move Class to Namespace…** asks for the target

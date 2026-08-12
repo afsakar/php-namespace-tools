@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -18,7 +18,7 @@
     },
     "homepage": "https://github.com/afsakar/php-namespace-tools#readme",
     "engines": {
-        "vscode": "^1.75.0"
+        "vscode": "^1.91.0"
     },
     "categories": [
         "Programming Languages"
@@ -36,7 +36,8 @@
     "main": "./extension.js",
     "scripts": {
         "test": "node test.js",
-        "package": "vsce package"
+        "fetch-server": "curl -fsSL --create-dirs -o server/phpactor.phar https://github.com/phpactor/phpactor/releases/download/2026.07.22.0/phpactor.phar",
+        "package": "npm run fetch-server && vsce package"
     },
     "contributes": {
         "commands": [
@@ -98,6 +99,26 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Fade out use statements whose name is never referred to in the file, and offer to remove them via Organize Imports."
+                },
+                "phpNamespaceTools.languageServer": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "phpactor"
+                    ],
+                    "default": "off",
+                    "enumDescriptions": [
+                        "Rely on whichever PHP language server you already run.",
+                        "Start the bundled Phpactor. Disable every other PHP language server first, or completions and diagnostics will be duplicated."
+                    ],
+                    "description": "Whether to start the bundled Phpactor language server. Phpactor provides no document formatting, so format on save stops working unless another formatter is configured.",
+                    "scope": "window"
+                },
+                "phpNamespaceTools.phpPath": {
+                    "type": "string",
+                    "default": "php",
+                    "description": "PHP executable used to run the bundled language server. Must be PHP 8.1 or newer.",
+                    "scope": "window"
                 }
             }
         },
@@ -113,5 +134,8 @@
                 }
             ]
         }
+    },
+    "dependencies": {
+        "vscode-languageclient": "^10.1.0"
     }
 }

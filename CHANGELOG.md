@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0
+
+- Bundle Phpactor and start it as a language server when
+  `phpNamespaceTools.languageServer` is set to `phpactor`. Off by default: this
+  extension otherwise rides whichever server is already running, and a second
+  one duplicates completions and diagnostics.
+- Warn when another PHP language server extension is active and the bundled one
+  is switched on.
+- Raise the minimum VS Code version to 1.91, which the language client requires.
+
 ## 0.8.0
 
 - Add "Move Class to Namespace…" and "Rename Class and File…", both driving the
