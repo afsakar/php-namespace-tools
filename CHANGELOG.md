@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0
+
+- Drop `$` from `editor.wordSeparators` for PHP and Blade, so double clicking a
+  variable selects the `$` with it. Contributed as a default, so setting the
+  value yourself still wins.
+
 ## 0.11.0
 
 - Warn when a file's namespace does not match its composer PSR-4 directory, with

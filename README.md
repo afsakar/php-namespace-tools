@@ -144,6 +144,16 @@ Read the ceiling before relying on it:
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 
+## Selecting a variable
+
+Double clicking `$property` selects only `property`, because VS Code treats `$`
+as a word separator. PhpStorm selects the whole variable.
+
+The extension ships a language-scoped default that drops `$` from
+`editor.wordSeparators` for PHP and Blade, so a double click takes the whole
+variable and word-wise cursor movement stops at its edges. It is only a default;
+setting `editor.wordSeparators` yourself overrides it.
+
 ## Settings
 
 | Setting | Default | Meaning |

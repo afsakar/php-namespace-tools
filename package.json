@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.11.0",
+    "version": "0.12.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -91,6 +91,14 @@
                     "default": true,
                     "description": "Warn when a PHP file declares a namespace its composer PSR-4 directory does not imply, with a quick fix to correct it. Catches files moved outside VS Code, which the move handler cannot see."
                 }
+            }
+        },
+        "configurationDefaults": {
+            "[php]": {
+                "editor.wordSeparators": "`~!@#%^&*()-=+[{]}\\|;:'\",.<>/?"
+            },
+            "[blade]": {
+                "editor.wordSeparators": "`~!@#%^&*()-=+[{]}\\|;:'\",.<>/?"
             }
         }
     }
