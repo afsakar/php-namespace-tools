@@ -48,8 +48,8 @@ Read the ceiling before relying on it:
 - **Only the moved file is edited.** Every `use` statement pointing at the old
   name elsewhere in the project is left untouched, and your language server will
   report them as unresolved. Updating them is not implemented yet.
-- **Moving a directory does nothing.** VS Code reports one rename for the folder
-  rather than one per file, and only individual `.php` files are handled.
+- **Directory moves are handled**, by enumerating the PHP files beneath the
+  moved directory. Moves above `maximumFilesPerMove` files are refused outright.
 - **The class name is never changed.** Renaming `Foo.php` to `Bar.php` updates
   nothing, because rewriting the declaration alone would silently break every
   caller.
@@ -64,6 +64,7 @@ Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 | `phpNamespaceTools.minimumPrefixLength` | `3` | Characters typed before the symbol index is queried. Raise it if completion feels slow. |
 | `phpNamespaceTools.maximumSuggestions` | `25` | Maximum relative suggestions per request. |
 | `phpNamespaceTools.updateNamespaceOnMove` | `true` | Rewrite the namespace declaration of a moved file. |
+| `phpNamespaceTools.maximumFilesPerMove` | `500` | Refuse a move touching more PHP files than this. |
 
 ## Troubleshooting
 

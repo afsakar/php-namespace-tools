@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -67,6 +67,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Rewrite the namespace declaration of a PHP file when it is moved, so it keeps matching its composer PSR-4 directory. Imports of that class elsewhere are not updated."
+                },
+                "phpNamespaceTools.maximumFilesPerMove": {
+                    "type": "number",
+                    "default": 500,
+                    "description": "Refuse to update namespaces when a single move touches more PHP files than this. The refusal is reported in the PHP Namespace Tools output channel."
                 }
             }
         }

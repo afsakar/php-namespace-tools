@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Update namespaces when a directory is moved. VS Code reports one rename for
+  the directory, so its PHP files are enumerated and renamespaced individually.
+- Place edits without opening each file as a text document, so a bulk move does
+  not load hundreds of editors.
+- Refuse moves touching more than `maximumFilesPerMove` files, reporting the
+  refusal in the output channel rather than silently doing part of the work.
+- Report every namespace rewrite in the output channel.
+
 ## 0.2.0
 
 - Rewrite the `namespace` declaration of a PHP file when it is moved, derived

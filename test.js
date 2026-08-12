@@ -38,6 +38,7 @@ const {
     shortName,
     psr4NamespaceFor,
     namespaceDeclaration,
+    offsetToPosition,
 } = require('./extension.js');
 
 const source = `<?php
@@ -284,5 +285,32 @@ const braced = declarationIn('<?php\nnamespace App\\Support {\n}\n');
 assert.strictEqual(braced.name, 'App\\Support', 'handles the braced form');
 
 assert.strictEqual(declarationIn('<?php\n\nreturn [];\n'), null, 'a file with no namespace');
+
+// --- offset to position ----------------------------------------------------
+const positioned = '<?php\n\nnamespace App\\Models;\n';
+const at = namespaceDeclaration(positioned);
+
+assert.deepStrictEqual(offsetToPosition(positioned, 0), { line: 0, character: 0 }, 'start of file');
+assert.deepStrictEqual(
+    offsetToPosition(positioned, at.index),
+    { line: 2, character: 10 },
+    'the namespace name sits after the keyword on the third line',
+);
+assert.deepStrictEqual(
+    offsetToPosition(positioned, at.index + at.name.length),
+    { line: 2, character: 20 },
+    'the end of the namespace name',
+);
+
+// The declaration must survive a CRLF file, since the offset is counted in the
+// same units VS Code uses for a character index.
+const crlf = '<?php\r\n\r\nnamespace App\\Models;\r\n';
+const crlfDeclaration = namespaceDeclaration(crlf);
+assert.strictEqual(crlfDeclaration.name, 'App\\Models', 'reads a CRLF file');
+assert.deepStrictEqual(
+    offsetToPosition(crlf, crlfDeclaration.index),
+    { line: 2, character: 10 },
+    'CRLF line endings do not shift the character index',
+);
 
 console.log('all assertions passed');

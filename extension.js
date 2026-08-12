@@ -181,6 +181,30 @@ function namespaceDeclaration(text) {
 }
 
 /**
+ * Convert a character offset into a zero-based line and character pair.
+ *
+ * Used to place an edit without opening the file as a text document, which
+ * matters when a directory move touches hundreds of files at once.
+ *
+ * @param {string} text
+ * @param {number} offset
+ * @return {{line: number, character: number}}
+ */
+function offsetToPosition(text, offset) {
+    let line = 0;
+    let lineStart = 0;
+
+    for (let index = 0; index < offset; index++) {
+        if (text[index] === '\n') {
+            line++;
+            lineStart = index + 1;
+        }
+    }
+
+    return { line, character: offset - lineStart };
+}
+
+/**
  * Build the fully qualified name of a workspace symbol.
  *
  * @param {vscode.SymbolInformation} symbol
@@ -452,25 +476,99 @@ async function readPsr4(folder) {
     }
 }
 
+/** Directories never worth descending into when a folder is moved. */
+const SKIPPED_DIRECTORIES = new Set(['vendor', 'node_modules']);
+
+/**
+ * Every `.php` file at or below a URI, as {@link vscode.Uri} values.
+ *
+ * The directory tree is walked directly rather than through `findFiles`, whose
+ * results are filtered by the user's search excludes — a file silently skipped
+ * here would keep a namespace that no longer autoloads.
+ *
+ * @param {vscode.Uri} uri
+ * @return {Promise<vscode.Uri[]>}
+ */
+async function phpFilesUnder(uri) {
+    let entries;
+
+    try {
+        entries = await vscode.workspace.fs.readDirectory(uri);
+    } catch {
+        return uri.path.endsWith('.php') ? [uri] : [];
+    }
+
+    const found = [];
+
+    for (const [name, type] of entries) {
+        const child = vscode.Uri.joinPath(uri, name);
+
+        if (type === vscode.FileType.Directory) {
+            if (SKIPPED_DIRECTORIES.has(name) || name.startsWith('.')) {
+                continue;
+            }
+
+            found.push(...(await phpFilesUnder(child)));
+        } else if (name.endsWith('.php')) {
+            found.push(child);
+        }
+    }
+
+    return found;
+}
+
+/**
+ * Expand one reported rename into the individual PHP files it moves.
+ *
+ * VS Code reports a directory move as a single rename of the directory, so the
+ * children have to be enumerated to be renamespaced.
+ *
+ * @param {vscode.Uri} oldUri
+ * @param {vscode.Uri} newUri
+ * @return {Promise<Array<{oldUri: vscode.Uri, newUri: vscode.Uri}>>}
+ */
+async function expandMove(oldUri, newUri) {
+    const files = await phpFilesUnder(oldUri);
+
+    return files.map((file) => ({
+        oldUri: file,
+        newUri: newUri.with({ path: newUri.path + file.path.slice(oldUri.path.length) }),
+    }));
+}
+
 /**
  * Rewrite the `namespace` declaration of each PHP file being moved so it keeps
  * matching its PSR-4 directory.
  *
- * The edit targets the old location: VS Code applies it before performing the
- * rename. Only the moved file itself is touched — imports of it elsewhere in the
- * project are left alone, and the language server will report them as unresolved.
+ * The edits target the old locations: VS Code applies them before performing the
+ * rename. Only the moved files themselves are touched — imports of them elsewhere
+ * in the project are left alone, and the language server reports them as
+ * unresolved.
  *
  * @param {ReadonlyArray<{oldUri: vscode.Uri, newUri: vscode.Uri}>} files
+ * @param {vscode.OutputChannel} output
  * @return {Promise<vscode.WorkspaceEdit>}
  */
-async function namespaceUpdatesForMove(files) {
+async function namespaceUpdatesForMove(files, output) {
     const edit = new vscode.WorkspaceEdit();
+    const moves = [];
 
     for (const { oldUri, newUri } of files) {
-        if (!newUri.path.endsWith('.php')) {
-            continue;
-        }
+        moves.push(...(await expandMove(oldUri, newUri)));
+    }
 
+    const limit = vscode.workspace.getConfiguration('phpNamespaceTools').get('maximumFilesPerMove', 500);
+
+    if (moves.length > limit) {
+        output.appendLine(
+            `move touches ${moves.length} PHP files, above the ${limit} file limit — no namespaces were updated`,
+        );
+        output.show(true);
+
+        return edit;
+    }
+
+    for (const { oldUri, newUri } of moves) {
         const folder = vscode.workspace.getWorkspaceFolder(newUri) ?? vscode.workspace.getWorkspaceFolder(oldUri);
 
         if (!folder) {
@@ -484,20 +582,27 @@ async function namespaceUpdatesForMove(files) {
             continue;
         }
 
-        const document = await vscode.workspace.openTextDocument(oldUri);
-        const declaration = namespaceDeclaration(document.getText());
+        const text = Buffer.from(await vscode.workspace.fs.readFile(oldUri)).toString('utf8');
+        const declaration = namespaceDeclaration(text);
 
         if (!declaration || declaration.name === target) {
             continue;
         }
 
+        const start = offsetToPosition(text, declaration.index);
+        const end = offsetToPosition(text, declaration.index + declaration.name.length);
+
         edit.replace(
             oldUri,
             new vscode.Range(
-                document.positionAt(declaration.index),
-                document.positionAt(declaration.index + declaration.name.length),
+                new vscode.Position(start.line, start.character),
+                new vscode.Position(end.line, end.character),
             ),
             target,
+        );
+
+        output.appendLine(
+            `${vscode.workspace.asRelativePath(oldUri, false)}: ${declaration.name} -> ${target}`,
         );
     }
 
@@ -514,7 +619,7 @@ function activate(context) {
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
-                event.waitUntil(namespaceUpdatesForMove(event.files));
+                event.waitUntil(namespaceUpdatesForMove(event.files, output));
             }
         }),
     );
@@ -532,4 +637,5 @@ module.exports = {
     importRegion,
     psr4NamespaceFor,
     namespaceDeclaration,
+    offsetToPosition,
 };
