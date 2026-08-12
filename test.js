@@ -39,6 +39,8 @@ const {
     psr4NamespaceFor,
     namespaceDeclaration,
     offsetToPosition,
+    typeDeclaration,
+    fqnReplacements,
 } = require('./extension.js');
 
 const source = `<?php
@@ -312,5 +314,63 @@ assert.deepStrictEqual(
     { line: 2, character: 10 },
     'CRLF line endings do not shift the character index',
 );
+
+// --- type declaration ------------------------------------------------------
+assert.strictEqual(typeDeclaration('<?php\nclass User {}\n'), 'User', 'plain class');
+assert.strictEqual(typeDeclaration('<?php\nfinal class User {}\n'), 'User', 'final class');
+assert.strictEqual(typeDeclaration('<?php\nabstract class Base {}\n'), 'Base', 'abstract class');
+assert.strictEqual(typeDeclaration('<?php\nenum Status: string {}\n'), 'Status', 'backed enum');
+assert.strictEqual(typeDeclaration('<?php\ninterface Contract {}\n'), 'Contract', 'interface');
+assert.strictEqual(typeDeclaration('<?php\ntrait HasSlug {}\n'), 'HasSlug', 'trait');
+assert.strictEqual(typeDeclaration('<?php\nreturn [];\n'), null, 'no type');
+
+// --- fully qualified name replacement --------------------------------------
+const OLD = 'App\\Models\\User';
+const NEW = 'App\\Domain\\User';
+
+const rewrite = (text) => {
+    let result = text;
+    for (const edit of fqnReplacements(text, OLD, NEW).reverse()) {
+        result = result.slice(0, edit.index) + edit.replacement + result.slice(edit.index + edit.length);
+    }
+    return result;
+};
+
+assert.strictEqual(rewrite('use App\\Models\\User;'), 'use App\\Domain\\User;', 'a use statement');
+assert.strictEqual(
+    rewrite('use App\\Models\\User as Account;'),
+    'use App\\Domain\\User as Account;',
+    'an aliased use statement',
+);
+assert.strictEqual(rewrite('\\App\\Models\\User::class'), '\\App\\Domain\\User::class', 'root qualified');
+assert.strictEqual(rewrite("'App\\Models\\User'"), "'App\\Domain\\User'", 'a single quoted string');
+assert.strictEqual(
+    rewrite('"App\\\\Models\\\\User"'),
+    '"App\\\\Domain\\\\User"',
+    'a double quoted string, where PHP requires doubled separators',
+);
+assert.strictEqual(
+    rewrite('use App\\Models\\User;\nuse App\\Models\\Post;'),
+    'use App\\Domain\\User;\nuse App\\Models\\Post;',
+    'leaves a sibling class alone',
+);
+
+// The four boundary cases the guards exist for.
+assert.strictEqual(rewrite('use App\\Models\\Users;'), 'use App\\Models\\Users;', 'a longer class name');
+assert.strictEqual(
+    rewrite('use Vendor\\App\\Models\\User;'),
+    'use Vendor\\App\\Models\\User;',
+    'the same tail under a different vendor namespace',
+);
+assert.strictEqual(
+    rewrite('use App\\Models\\User\\Profile;'),
+    'use App\\Models\\User\\Profile;',
+    'a deeper class that merely starts with the moved one',
+);
+assert.strictEqual(rewrite('$user = new User();'), '$user = new User();', 'the bare short name is untouched');
+
+// A doubled-separator occurrence must not also be counted as a single one.
+assert.strictEqual(fqnReplacements('"App\\\\Models\\\\User"', OLD, NEW).length, 1, 'no double counting');
+assert.strictEqual(fqnReplacements('use App\\Models\\User;', OLD, NEW).length, 1, 'one edit per occurrence');
 
 console.log('all assertions passed');

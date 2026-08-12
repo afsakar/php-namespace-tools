@@ -181,6 +181,60 @@ function namespaceDeclaration(text) {
 }
 
 /**
+ * Locate the first type declared in a file.
+ *
+ * @param {string} text
+ * @return {string|null}
+ */
+function typeDeclaration(text) {
+    const match = text.match(
+        /^[ \t]*(?:(?:abstract|final|readonly)[ \t]+)*(?:class|interface|trait|enum)[ \t]+([A-Za-z_][A-Za-z0-9_]*)/m,
+    );
+
+    return match ? match[1] : null;
+}
+
+/**
+ * Every place a fully qualified name appears in a file, with its replacement.
+ *
+ * Both spellings are searched: the single backslash form of source code and
+ * `use` statements, and the doubled form a double-quoted PHP string requires,
+ * which is how class names are written in Laravel config files.
+ *
+ * The boundaries are what keep this safe. A match must not continue into a
+ * longer name (`App\Models\Users`), must not be the tail of a different one
+ * (`Vendor\App\Models\User`), and must not be a parent of a deeper one
+ * (`App\Models\User\Profile`) — while a root-qualified `\App\Models\User` must
+ * still match.
+ *
+ * @param {string} text
+ * @param {string} oldFqn
+ * @param {string} newFqn
+ * @return {Array<{index: number, length: number, replacement: string}>} Sorted by offset.
+ */
+function fqnReplacements(text, oldFqn, newFqn) {
+    const edits = [];
+
+    for (const separator of ['\\', '\\\\']) {
+        const from = oldFqn.split('\\').join(separator);
+        const to = newFqn.split('\\').join(separator);
+        const literal = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const boundary = separator.replace(/\\/g, '\\\\');
+        const pattern = new RegExp(
+            `(?<![A-Za-z0-9_])(?<![A-Za-z0-9_]${boundary})${literal}(?![A-Za-z0-9_\\\\])`,
+            'g',
+        );
+
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            edits.push({ index: match.index, length: from.length, replacement: to });
+        }
+    }
+
+    return edits.sort((left, right) => left.index - right.index);
+}
+
+/**
  * Convert a character offset into a zero-based line and character pair.
  *
  * Used to place an edit without opening the file as a text document, which
@@ -557,16 +611,19 @@ async function namespaceUpdatesForMove(files, output) {
         moves.push(...(await expandMove(oldUri, newUri)));
     }
 
-    const limit = vscode.workspace.getConfiguration('phpNamespaceTools').get('maximumFilesPerMove', 500);
+    const configuration = vscode.workspace.getConfiguration('phpNamespaceTools');
+    const limit = configuration.get('maximumFilesPerMove', 500);
 
     if (moves.length > limit) {
         output.appendLine(
-            `move touches ${moves.length} PHP files, above the ${limit} file limit — no namespaces were updated`,
+            `move touches ${moves.length} PHP files, above the ${limit} file limit — nothing was updated`,
         );
         output.show(true);
 
         return edit;
     }
+
+    const renames = [];
 
     for (const { oldUri, newUri } of moves) {
         const folder = vscode.workspace.getWorkspaceFolder(newUri) ?? vscode.workspace.getWorkspaceFolder(oldUri);
@@ -589,24 +646,108 @@ async function namespaceUpdatesForMove(files, output) {
             continue;
         }
 
-        const start = offsetToPosition(text, declaration.index);
-        const end = offsetToPosition(text, declaration.index + declaration.name.length);
+        replaceOffset(edit, oldUri, text, declaration.index, declaration.name.length, target);
+        output.appendLine(`${vscode.workspace.asRelativePath(oldUri, false)}: ${declaration.name} -> ${target}`);
 
-        edit.replace(
-            oldUri,
-            new vscode.Range(
-                new vscode.Position(start.line, start.character),
-                new vscode.Position(end.line, end.character),
-            ),
-            target,
-        );
+        const type = typeDeclaration(text);
 
-        output.appendLine(
-            `${vscode.workspace.asRelativePath(oldUri, false)}: ${declaration.name} -> ${target}`,
-        );
+        if (type) {
+            renames.push({
+                oldFqn: `${declaration.name}\\${type}`,
+                newFqn: `${target}\\${type}`,
+            });
+        }
+    }
+
+    if (renames.length > 0 && configuration.get('updateImportsOnMove', true)) {
+        await updateReferences(edit, renames, output);
     }
 
     return edit;
+}
+
+/**
+ * Queue a replacement described by a character offset into `text`.
+ *
+ * @param {vscode.WorkspaceEdit} edit
+ * @param {vscode.Uri} uri
+ * @param {string} text
+ * @param {number} index
+ * @param {number} length
+ * @param {string} replacement
+ */
+function replaceOffset(edit, uri, text, index, length, replacement) {
+    const start = offsetToPosition(text, index);
+    const end = offsetToPosition(text, index + length);
+
+    edit.replace(
+        uri,
+        new vscode.Range(
+            new vscode.Position(start.line, start.character),
+            new vscode.Position(end.line, end.character),
+        ),
+        replacement,
+    );
+}
+
+/**
+ * Repoint every reference to a moved class at its new fully qualified name.
+ *
+ * Matching is textual on the full name rather than driven by the reference
+ * provider, which covers `use` statements, `::class` expressions and the plain
+ * strings Laravel configuration uses to name classes — the last of which no
+ * PHP language server resolves.
+ *
+ * Candidate files come from `findFiles`, so a path hidden by the user's
+ * `files.exclude` or `search.exclude` is not visited.
+ *
+ * @param {vscode.WorkspaceEdit} edit
+ * @param {Array<{oldFqn: string, newFqn: string}>} renames
+ * @param {vscode.OutputChannel} output
+ */
+async function updateReferences(edit, renames, output) {
+    // Cheap pre-filter so most files are rejected on a substring test rather
+    // than a regex per rename. Both separator spellings have to be looked for,
+    // since a doubled one does not contain the single one as a substring.
+    const needles = [
+        ...new Set(
+            renames.flatMap(({ oldFqn }) => {
+                const namespace = oldFqn.slice(0, oldFqn.lastIndexOf('\\'));
+
+                return [namespace, namespace.split('\\').join('\\\\')];
+            }),
+        ),
+    ];
+
+    const candidates = await vscode.workspace.findFiles('**/*.php', '**/{vendor,node_modules}/**');
+    let files = 0;
+    let references = 0;
+
+    for (const uri of candidates) {
+        const text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+
+        if (!needles.some((needle) => text.includes(needle))) {
+            continue;
+        }
+
+        let found = 0;
+
+        for (const { oldFqn, newFqn } of renames) {
+            for (const occurrence of fqnReplacements(text, oldFqn, newFqn)) {
+                replaceOffset(edit, uri, text, occurrence.index, occurrence.length, occurrence.replacement);
+                found++;
+            }
+        }
+
+        if (found > 0) {
+            files++;
+            references += found;
+            output.appendLine(`  ${vscode.workspace.asRelativePath(uri, false)}: ${found} reference(s)`);
+        }
+    }
+
+    output.appendLine(`repointed ${references} reference(s) across ${files} file(s)`);
+    output.show(true);
 }
 
 /** @param {vscode.ExtensionContext} context */
@@ -637,5 +778,7 @@ module.exports = {
     importRegion,
     psr4NamespaceFor,
     namespaceDeclaration,
+    typeDeclaration,
+    fqnReplacements,
     offsetToPosition,
 };
