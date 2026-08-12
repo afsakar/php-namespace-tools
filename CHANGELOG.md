@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- Offer a quick fix on a qualified name that shortens it: reusing a direct
+  import, reusing an imported parent namespace, or adding an import sorted into
+  the existing block. Works inside docblocks, where a generic annotation such as
+  `@use HasFactory<\Database\Factories\Corporate\ProductFactory>` is otherwise
+  left fully qualified.
+- Withhold the offer when the short name already belongs to something else in
+  the file, rather than silently changing what that name resolves to.
+
 ## 0.6.0
 
 - Repoint references written relative to an imported parent namespace, such as

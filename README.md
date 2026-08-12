@@ -36,6 +36,26 @@ Consequences worth knowing:
 - Suggestions only appear for namespaces you have already imported. This is
   deliberate: the extension never adds an import, it only reuses one.
 
+## Shorten a qualified name
+
+Put the cursor on a fully qualified name anywhere in a file — including inside a
+docblock, where no language server offers to help — and the lightbulb offers to
+shorten it. Exactly one offer is made, decided by what the file already imports:
+
+```php
+/** @use HasFactory<\Database\Factories\Corporate\ProductFactory> */
+
+// nothing imported      -> adds `use Database\Factories\Corporate\ProductFactory;`
+//                          and leaves `HasFactory<ProductFactory>`
+// parent namespace in   -> `HasFactory<Corporate\ProductFactory>`, no new import
+// class already in      -> `HasFactory<ProductFactory>`, no new import
+// short name taken      -> nothing offered, since importing would change what
+//                          the existing name resolves to
+```
+
+A new import is sorted into the existing block, or opens one after the
+`namespace` statement when there is none.
+
 ## Namespace on move
 
 Moving a PHP file changes the namespace PSR-4 requires it to declare. VS Code

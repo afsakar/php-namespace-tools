@@ -240,6 +240,93 @@ function fqnReplacements(text, oldFqn, newFqn, options = {}) {
 }
 
 /**
+ * The qualified name surrounding a character offset, if there is one.
+ *
+ * The span runs over name characters and separators only, so it stops at the
+ * `<` and `>` of a generic docblock tag, at `::`, and at any punctuation. A
+ * leading `\` is part of the span so it is replaced along with the rest.
+ * Names carrying no separator are rejected: they are already short.
+ *
+ * @param {string} text
+ * @param {number} offset
+ * @return {{fqn: string, index: number, length: number}|null} `fqn` has no leading separator.
+ */
+function qualifiedNameAt(text, offset) {
+    const isNameCharacter = (character) => character !== undefined && /[A-Za-z0-9_\\]/.test(character);
+
+    let start = Math.min(offset, text.length);
+    let end = start;
+
+    while (isNameCharacter(text[start - 1])) {
+        start--;
+    }
+
+    while (isNameCharacter(text[end])) {
+        end++;
+    }
+
+    const span = text.slice(start, end);
+
+    if (!span.includes('\\') || span.endsWith('\\')) {
+        return null;
+    }
+
+    const fqn = span.replace(/^\\+/, '');
+
+    // A trailing segment is required; `App\` alone names nothing importable.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)+$/.test(fqn)) {
+        return null;
+    }
+
+    return { fqn, index: start, length: end - start };
+}
+
+/**
+ * Where to insert a `use` statement, and the text to insert there.
+ *
+ * The new import joins an existing block in alphabetical order. With no block
+ * to join it goes after the namespace statement, or failing that after the
+ * opening tag, separated by a blank line.
+ *
+ * @param {string} text
+ * @param {string} fqn
+ * @return {{index: number, text: string}}
+ */
+function importInsertion(text, fqn) {
+    const statement = /^[ \t]*use[ \t]+(?:function[ \t]+|const[ \t]+)?([^;(]+);[ \t]*\r?\n/gm;
+    const region = importRegion(text);
+    const existing = [];
+
+    let match;
+    while ((match = statement.exec(region)) !== null) {
+        existing.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            name: match[1].trim(),
+        });
+    }
+
+    const line = `use ${fqn};\n`;
+
+    if (existing.length > 0) {
+        const successor = existing.find((entry) => entry.name > fqn);
+
+        return { index: successor ? successor.start : existing[existing.length - 1].end, text: line };
+    }
+
+    const namespace = namespaceDeclaration(text);
+    const anchor = namespace ? text.indexOf(';', namespace.index) : text.indexOf('<?php');
+
+    if (anchor === -1) {
+        return { index: 0, text: line };
+    }
+
+    const lineEnd = text.indexOf('\n', anchor);
+
+    return { index: lineEnd === -1 ? text.length : lineEnd + 1, text: `\n${line}` };
+}
+
+/**
  * The file name of a URI path, without its `.php` extension.
  *
  * @param {string} uriPath
@@ -468,6 +555,79 @@ const provider = {
         return new vscode.CompletionList(items, true);
     },
 };
+
+/**
+ * Offers to shorten the qualified name under the cursor.
+ *
+ * Which offer applies depends on what the file already imports, so at most one
+ * is ever shown: reuse a direct import, reuse an imported parent namespace, or
+ * add an import. An import is not offered when the short name is already taken
+ * by something else in the file, since that would silently change what the
+ * existing name resolves to.
+ *
+ * @type {vscode.CodeActionProvider}
+ */
+const shortenProvider = {
+    provideCodeActions(document, range) {
+        if (!vscode.workspace.getConfiguration('phpNamespaceTools').get('enabled', true)) {
+            return undefined;
+        }
+
+        const text = document.getText();
+        const found = qualifiedNameAt(text, document.offsetAt(range.start));
+
+        if (!found) {
+            return undefined;
+        }
+
+        const span = new vscode.Range(
+            document.positionAt(found.index),
+            document.positionAt(found.index + found.length),
+        );
+
+        const imports = collectImports(text);
+        const direct = imports.find((entry) => entry.fqn === found.fqn);
+
+        if (direct) {
+            return [shortenAction(document, span, direct.alias, `Use imported \`${direct.alias}\``)];
+        }
+
+        const relative = relativize(found.fqn, imports);
+
+        if (relative) {
+            return [shortenAction(document, span, relative, `Shorten to \`${relative}\``)];
+        }
+
+        const short = shortName(found.fqn);
+
+        if (imports.some((entry) => entry.alias === short) || typeDeclaration(text) === short) {
+            return undefined;
+        }
+
+        const insertion = importInsertion(text, found.fqn);
+        const action = shortenAction(document, span, short, `Import \`${found.fqn}\``);
+
+        action.edit.insert(document.uri, document.positionAt(insertion.index), insertion.text);
+
+        return [action];
+    },
+};
+
+/**
+ * @param {vscode.TextDocument} document
+ * @param {vscode.Range} span
+ * @param {string} replacement
+ * @param {string} title
+ * @return {vscode.CodeAction}
+ */
+function shortenAction(document, span, replacement, title) {
+    const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.replace(document.uri, span, replacement);
+
+    return action;
+}
 
 /**
  * Dump raw workspace symbol results so the underlying language server's output
@@ -872,6 +1032,9 @@ function activate(context) {
     context.subscriptions.push(
         output,
         vscode.languages.registerCompletionItemProvider({ language: 'php', scheme: 'file' }, provider),
+        vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, shortenProvider, {
+            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+        }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {
@@ -898,5 +1061,7 @@ module.exports = {
     bareNameReplacements,
     resolvesBareName,
     fileBaseName,
+    qualifiedNameAt,
+    importInsertion,
     offsetToPosition,
 };

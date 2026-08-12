@@ -44,6 +44,8 @@ const {
     bareNameReplacements,
     resolvesBareName,
     fileBaseName,
+    qualifiedNameAt,
+    importInsertion,
 } = require('./extension.js');
 
 const source = `<?php
@@ -511,6 +513,85 @@ assert.strictEqual(
     bareNameReplacements('PageBlocks\\About\\CompanyInfoBlock::x()', 'CompanyInfoBlock', 'Z').length,
     0,
     'the bare pass does not fire inside a qualified name',
+);
+
+// --- qualified name under the cursor ---------------------------------------
+// The case this exists for: a generic annotation in a Laravel model docblock.
+const docblock = '    /** @use HasFactory<\\Database\\Factories\\Corporate\\ProductFactory> */';
+const inGeneric = qualifiedNameAt(docblock, docblock.indexOf('ProductFactory') + 4);
+
+assert.strictEqual(
+    inGeneric.fqn,
+    'Database\\Factories\\Corporate\\ProductFactory',
+    'reads the name out of a generic docblock tag',
+);
+assert.strictEqual(
+    docblock.slice(inGeneric.index, inGeneric.index + inGeneric.length),
+    '\\Database\\Factories\\Corporate\\ProductFactory',
+    'the span covers the leading separator so it is replaced too',
+);
+
+// The angle brackets must bound the span on both sides.
+assert.strictEqual(qualifiedNameAt(docblock, docblock.indexOf('HasFactory') + 2), null, 'a bare name is already short');
+
+const call = 'return \\App\\Models\\User::class;';
+const inCall = qualifiedNameAt(call, call.indexOf('Models') + 2);
+assert.strictEqual(inCall.fqn, 'App\\Models\\User', 'stops at ::');
+assert.strictEqual(call.slice(inCall.index, inCall.index + inCall.length), '\\App\\Models\\User', 'span');
+
+const unqualified = 'new App\\Models\\User();';
+assert.strictEqual(
+    qualifiedNameAt(unqualified, unqualified.indexOf('User') + 1).fqn,
+    'App\\Models\\User',
+    'a name without a leading separator',
+);
+
+assert.strictEqual(qualifiedNameAt('$user = 1;', 3), null, 'not a name at all');
+assert.strictEqual(qualifiedNameAt('use App\\Models\\;', 12), null, 'a trailing separator names nothing');
+
+// --- where a use statement goes --------------------------------------------
+const withBlock = `<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Support\\Str;
+
+class Product extends Model {}
+`;
+
+const intoBlock = importInsertion(withBlock, 'Database\\Factories\\Corporate\\ProductFactory');
+assert.strictEqual(
+    withBlock.slice(0, intoBlock.index) + intoBlock.text + withBlock.slice(intoBlock.index),
+    withBlock.replace(
+        'use Illuminate\\Database',
+        'use Database\\Factories\\Corporate\\ProductFactory;\nuse Illuminate\\Database',
+    ),
+    'sorts into an existing block',
+);
+
+const appended = importInsertion(withBlock, 'Zzz\\Last');
+assert.ok(
+    (withBlock.slice(0, appended.index) + appended.text + withBlock.slice(appended.index)).includes(
+        'use Illuminate\\Support\\Str;\nuse Zzz\\Last;\n',
+    ),
+    'appends after the last import when it sorts last',
+);
+
+const noBlock = '<?php\n\nnamespace App\\Models;\n\nclass Product {}\n';
+const afterNamespace = importInsertion(noBlock, 'App\\Support\\Helper');
+assert.strictEqual(
+    noBlock.slice(0, afterNamespace.index) + afterNamespace.text + noBlock.slice(afterNamespace.index),
+    '<?php\n\nnamespace App\\Models;\n\nuse App\\Support\\Helper;\n\nclass Product {}\n',
+    'opens a block after the namespace statement',
+);
+
+const noNamespace = '<?php\n\nclass Product {}\n';
+const afterTag = importInsertion(noNamespace, 'App\\Support\\Helper');
+assert.strictEqual(
+    noNamespace.slice(0, afterTag.index) + afterTag.text + noNamespace.slice(afterTag.index),
+    '<?php\n\nuse App\\Support\\Helper;\n\nclass Product {}\n',
+    'falls back to the opening tag',
 );
 
 console.log('all assertions passed');
