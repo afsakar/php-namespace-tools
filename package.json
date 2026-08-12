@@ -1,0 +1,69 @@
+{
+    "name": "php-namespace-tools",
+    "displayName": "PHP Namespace Tools",
+    "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
+    "version": "0.1.0",
+    "publisher": "afsakar",
+    "license": "MIT",
+    "author": {
+        "name": "Azad Furkan ŞAKAR",
+        "email": "afsakarr@gmail.com"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/afsakar/php-namespace-tools.git"
+    },
+    "bugs": {
+        "url": "https://github.com/afsakar/php-namespace-tools/issues"
+    },
+    "homepage": "https://github.com/afsakar/php-namespace-tools#readme",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "keywords": [
+        "php",
+        "namespace",
+        "import",
+        "use statement",
+        "phpstorm"
+    ],
+    "activationEvents": [
+        "onLanguage:php"
+    ],
+    "main": "./extension.js",
+    "scripts": {
+        "test": "node test.js",
+        "package": "vsce package"
+    },
+    "contributes": {
+        "commands": [
+            {
+                "command": "phpNamespaceTools.debugSymbols",
+                "title": "PHP Namespace Tools: Debug Workspace Symbols"
+            }
+        ],
+        "configuration": {
+            "title": "PHP Namespace Tools",
+            "properties": {
+                "phpNamespaceTools.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Offer relative-namespace completions in PHP files."
+                },
+                "phpNamespaceTools.minimumPrefixLength": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "Minimum characters typed before the workspace symbol index is queried."
+                },
+                "phpNamespaceTools.maximumSuggestions": {
+                    "type": "number",
+                    "default": 25,
+                    "description": "Maximum number of relative-namespace suggestions per completion request."
+                }
+            }
+        }
+    }
+}
