@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.0
+
+- Add a command that renames a class and its file together and repoints every
+  reference, rather than requiring a rename in the explorer.
+
 ## 0.13.0
 
 - Offer completion and both quick fixes in Blade templates, adding imports as

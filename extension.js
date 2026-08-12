@@ -1617,6 +1617,87 @@ async function removeUnusedImports(output) {
     );
 }
 
+/**
+ * Rename the class in the active editor along with the file that holds it.
+ *
+ * PSR-4 ties the two together, so renaming either alone breaks autoloading.
+ * The edits and the rename travel in one workspace edit, which keeps them in a
+ * single undo step and lets VS Code follow the open editor to the new path.
+ *
+ * @param {vscode.OutputChannel} output
+ */
+async function renameClassAndFile(output) {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor || editor.document.languageId !== 'php') {
+        return;
+    }
+
+    const document = editor.document;
+    const text = document.getText();
+    const current = typeDeclaration(text);
+
+    if (!current) {
+        vscode.window.showWarningMessage('PHP Namespace Tools: this file declares no class, interface, trait or enum.');
+
+        return;
+    }
+
+    const base = fileBaseName(document.uri.path);
+
+    if (current !== base) {
+        vscode.window.showWarningMessage(
+            `PHP Namespace Tools: ${base}.php declares ${current}, so renaming the file would not rename the class. Rename them separately.`,
+        );
+
+        return;
+    }
+
+    const renamed = await vscode.window.showInputBox({
+        prompt: `Rename ${current} and its file`,
+        value: current,
+        validateInput: (value) => {
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+                return 'A class name must be an identifier: letters, digits and underscores, not starting with a digit.';
+            }
+
+            return null;
+        },
+    });
+
+    if (!renamed || renamed === current) {
+        return;
+    }
+
+    const target = document.uri.with({ path: `${document.uri.path.slice(0, document.uri.path.lastIndexOf('/'))}/${renamed}.php` });
+
+    try {
+        await vscode.workspace.fs.stat(target);
+        vscode.window.showErrorMessage(`PHP Namespace Tools: ${renamed}.php already exists.`);
+
+        return;
+    } catch {
+        // Nothing there, which is what we want.
+    }
+
+    if (document.isDirty && !(await document.save())) {
+        vscode.window.showErrorMessage('PHP Namespace Tools: could not save the file before renaming it.');
+
+        return;
+    }
+
+    output.appendLine(`renaming ${current} to ${renamed}`);
+
+    const edit = await namespaceUpdatesForMove([{ oldUri: document.uri, newUri: target }], output);
+
+    // Queued last so the text edits above still address the old path.
+    edit.renameFile(document.uri, target);
+
+    if (!(await vscode.workspace.applyEdit(edit))) {
+        vscode.window.showErrorMessage('PHP Namespace Tools: the rename could not be applied.');
+    }
+}
+
 /** Identifies the diagnostic this extension raises, so its fix can find it. */
 const PSR4_DIAGNOSTIC = 'psr4-namespace';
 
@@ -1771,6 +1852,7 @@ function activate(context) {
         }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
         vscode.commands.registerCommand('phpNamespaceTools.removeUnusedImports', () => removeUnusedImports(output)),
+        vscode.commands.registerCommand('phpNamespaceTools.renameClass', () => renameClassAndFile(output)),
         vscode.commands.registerCommand('phpNamespaceTools.shortenAll', () => shortenAll(output)),
         vscode.workspace.onWillRenameFiles((event) => {
             if (vscode.workspace.getConfiguration('phpNamespaceTools').get('updateNamespaceOnMove', true)) {

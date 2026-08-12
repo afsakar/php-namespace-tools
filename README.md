@@ -164,6 +164,20 @@ Read the ceiling before relying on it:
 
 Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 
+## Rename a class
+
+**PHP Namespace Tools: Rename Class and File** renames the class in the active
+editor and its file together, then repoints every reference. PSR-4 ties the two
+names to each other, so renaming either alone stops the class autoloading.
+
+The command refuses when the file declares no type, and when the declared type
+is not named after the file — there the two names are already independent and
+guessing which one was meant would be wrong. An existing file at the target name
+is never overwritten.
+
+The edits and the rename travel in one workspace edit, so `Cmd+Z` undoes the
+whole thing and the open editor follows the file to its new path.
+
 ## Selecting a variable
 
 Double clicking `$property` selects only `property`, because VS Code treats `$`
