@@ -1507,14 +1507,156 @@ async function removeUnusedImports(output) {
     );
 }
 
+/** Identifies the diagnostic this extension raises, so its fix can find it. */
+const PSR4_DIAGNOSTIC = 'psr4-namespace';
+
+/**
+ * The namespace each flagged file should declare, keyed by document URI.
+ *
+ * The fix provider has no PSR-4 map of its own, and recovering the value by
+ * parsing it back out of the diagnostic message would break the moment the
+ * wording changed.
+ *
+ * @type {Map<string, string>}
+ */
+const expectedNamespaces = new Map();
+
+/**
+ * Warn when a file declares a namespace its PSR-4 directory does not imply.
+ *
+ * The move handler only sees renames performed inside VS Code. A file moved by
+ * git, by `mv`, by a merge or by another editor keeps a namespace that no longer
+ * autoloads, and nothing else in the editor points that out.
+ *
+ * @param {vscode.ExtensionContext} context
+ */
+function watchNamespaces(context) {
+    const collection = vscode.languages.createDiagnosticCollection('phpNamespaceTools');
+    const psr4ByFolder = new Map();
+
+    /** @param {vscode.TextDocument} document */
+    async function check(document) {
+        if (document.languageId !== 'php' || document.uri.scheme !== 'file') {
+            return;
+        }
+
+        if (!vscode.workspace.getConfiguration('phpNamespaceTools').get('validateNamespace', true)) {
+            collection.delete(document.uri);
+
+            return;
+        }
+
+        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+
+        if (!folder) {
+            return;
+        }
+
+        const key = folder.uri.toString();
+
+        if (!psr4ByFolder.has(key)) {
+            psr4ByFolder.set(key, await readPsr4(folder));
+        }
+
+        const psr4 = psr4ByFolder.get(key);
+        const target = psr4 && psr4NamespaceFor(vscode.workspace.asRelativePath(document.uri, false), psr4);
+        const text = document.getText();
+        const declaration = namespaceDeclaration(text);
+
+        // A file outside every PSR-4 root, or one holding no type at all, is not
+        // autoloaded by its path and has nothing to conform to.
+        if (!target || !declaration || !typeDeclaration(text) || declaration.name === target) {
+            collection.delete(document.uri);
+            expectedNamespaces.delete(document.uri.toString());
+
+            return;
+        }
+
+        const diagnostic = new vscode.Diagnostic(
+            new vscode.Range(
+                document.positionAt(declaration.index),
+                document.positionAt(declaration.index + declaration.name.length),
+            ),
+            `Namespace does not match the PSR-4 mapping for this directory. Expected ${target}.`,
+            vscode.DiagnosticSeverity.Warning,
+        );
+
+        diagnostic.code = PSR4_DIAGNOSTIC;
+        diagnostic.source = 'PHP Namespace Tools';
+
+        expectedNamespaces.set(document.uri.toString(), target);
+        collection.set(document.uri, [diagnostic]);
+    }
+
+    context.subscriptions.push(
+        collection,
+        vscode.workspace.onDidOpenTextDocument(check),
+        vscode.workspace.onDidSaveTextDocument(check),
+        vscode.workspace.onDidChangeTextDocument((event) => check(event.document)),
+        vscode.workspace.onDidCloseTextDocument((document) => {
+            collection.delete(document.uri);
+            expectedNamespaces.delete(document.uri.toString());
+        }),
+
+        // A changed composer.json can make every open file conform or stop
+        // conforming, so the cached map is dropped and everything rechecked.
+        vscode.workspace.onDidSaveTextDocument((document) => {
+            if (!document.uri.path.endsWith('/composer.json')) {
+                return;
+            }
+
+            psr4ByFolder.clear();
+            vscode.workspace.textDocuments.forEach(check);
+        }),
+    );
+
+    vscode.workspace.textDocuments.forEach(check);
+}
+
+/**
+ * Rewrites a namespace declaration the PSR-4 mapping disagrees with.
+ *
+ * @type {vscode.CodeActionProvider}
+ */
+const namespaceFixProvider = {
+    provideCodeActions(document, range, context) {
+        const expected = expectedNamespaces.get(document.uri.toString());
+
+        if (!expected) {
+            return undefined;
+        }
+
+        return context.diagnostics
+            .filter((diagnostic) => diagnostic.code === PSR4_DIAGNOSTIC)
+            .map((diagnostic) => {
+                const action = new vscode.CodeAction(
+                    `Change namespace to \`${expected}\``,
+                    vscode.CodeActionKind.QuickFix,
+                );
+
+                action.diagnostics = [diagnostic];
+                action.isPreferred = true;
+                action.edit = new vscode.WorkspaceEdit();
+                action.edit.replace(document.uri, diagnostic.range, expected);
+
+                return action;
+            });
+    },
+};
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
     const output = vscode.window.createOutputChannel('PHP Namespace Tools');
+
+    watchNamespaces(context);
 
     context.subscriptions.push(
         output,
         vscode.languages.registerCompletionItemProvider({ language: 'php', scheme: 'file' }, provider),
         vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, shortenProvider, {
+            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+        }),
+        vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, namespaceFixProvider, {
             providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
         }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),

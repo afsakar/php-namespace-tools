@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0
+
+- Warn when a file's namespace does not match its composer PSR-4 directory, with
+  a quick fix. Covers files moved outside VS Code, which the move handler
+  structurally cannot see.
+
 ## 0.10.0
 
 - Resolve names against the file's own namespace as well as its imports, so a

@@ -98,6 +98,19 @@ compiling. For the same reason three shapes are never touched:
 Usages inside docblocks, attributes, `implements` clauses and trait `use`
 statements all count, including inside an anonymous class body.
 
+## Namespace conformance
+
+A file whose `namespace` does not match its composer PSR-4 directory is flagged,
+with a quick fix that corrects the declaration.
+
+This exists because the move handling below only sees renames performed inside
+VS Code. A file moved by git, by `mv`, by a merge or by another editor keeps a
+namespace that no longer autoloads, and nothing in the editor says so.
+
+Files outside every PSR-4 root, and files declaring no type at all, have nothing
+to conform to and are never flagged. Set
+`phpNamespaceTools.validateNamespace` to `false` to turn it off.
+
 ## Namespace on move
 
 Moving a PHP file changes the namespace PSR-4 requires it to declare. VS Code
@@ -141,6 +154,7 @@ Set `phpNamespaceTools.updateNamespaceOnMove` to `false` to turn it off.
 | `phpNamespaceTools.updateNamespaceOnMove` | `true` | Rewrite the namespace declaration of a moved file. |
 | `phpNamespaceTools.maximumFilesPerMove` | `500` | Refuse a move touching more PHP files than this. |
 | `phpNamespaceTools.updateImportsOnMove` | `true` | Repoint references to a moved class across the project. |
+| `phpNamespaceTools.validateNamespace` | `true` | Warn when a namespace does not match its PSR-4 directory. |
 
 ## Troubleshooting
 
