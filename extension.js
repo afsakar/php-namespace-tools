@@ -126,6 +126,55 @@ function relativize(fqn, imports) {
 }
 
 /**
+ * Rewrite a fully qualified name against the file's own namespace.
+ *
+ * PHP resolves a qualified name that is not root-qualified against the current
+ * namespace, so `Database\Seeders\Corporate\ProductSeeder` may be written as
+ * `Corporate\ProductSeeder` inside `namespace Database\Seeders;` with no import
+ * at all.
+ *
+ * Returns null for a class sitting directly in the namespace, whose bare name
+ * already resolves, and null when the leading segment is an imported alias:
+ * PHP checks imports before the current namespace, so the import would win and
+ * the name would resolve somewhere else entirely.
+ *
+ * @param {string} fqn
+ * @param {string|null} namespace The namespace the referencing file declares.
+ * @param {Array<{fqn: string, alias: string}>} imports
+ * @return {string|null}
+ */
+function namespaceRelative(fqn, namespace, imports) {
+    if (!namespace || !fqn.startsWith(`${namespace}\\`)) {
+        return null;
+    }
+
+    const remainder = fqn.slice(namespace.length + 1);
+
+    if (!remainder.includes('\\')) {
+        return null;
+    }
+
+    const head = remainder.slice(0, remainder.indexOf('\\'));
+
+    return imports.some((entry) => entry.alias === head) ? null : remainder;
+}
+
+/**
+ * The shortest spelling of a name the referencing file resolves correctly,
+ * whether that comes from an import or from its own namespace.
+ *
+ * @param {string} fqn
+ * @param {Array<{fqn: string, alias: string}>} imports
+ * @param {string|null} namespace
+ * @return {string|null}
+ */
+function shortestRelative(fqn, imports, namespace) {
+    const candidates = [relativize(fqn, imports), namespaceRelative(fqn, namespace, imports)].filter(Boolean);
+
+    return candidates.sort((left, right) => left.length - right.length)[0] ?? null;
+}
+
+/**
  * Resolve the namespace a file must declare, from a composer PSR-4 map.
  *
  * The longest matching directory prefix wins, so a more specific mapping such
@@ -523,6 +572,7 @@ function shortenAllPlan(text) {
         taken.add(declared);
     }
 
+    const namespace = namespaceDeclaration(text)?.name ?? null;
     const replacements = [];
     const added = new Map();
     const skipped = new Set();
@@ -535,7 +585,7 @@ function shortenAllPlan(text) {
             continue;
         }
 
-        const relative = relativize(occurrence.fqn, imports);
+        const relative = shortestRelative(occurrence.fqn, imports, namespace);
 
         if (relative) {
             replacements.push({ ...occurrence, replacement: relative });
@@ -742,8 +792,9 @@ const provider = {
         }
 
         const imports = collectImports(document.getText());
+        const namespace = namespaceDeclaration(document.getText())?.name ?? null;
 
-        if (imports.length === 0) {
+        if (imports.length === 0 && !namespace) {
             return undefined;
         }
 
@@ -779,7 +830,7 @@ const provider = {
                 continue;
             }
 
-            const relative = relativize(fqn, imports);
+            const relative = shortestRelative(fqn, imports, namespace);
 
             if (!relative || seen.has(relative)) {
                 continue;
@@ -843,7 +894,7 @@ const shortenProvider = {
             return [shortenAction(document, span, direct.alias, `Use imported \`${direct.alias}\``)];
         }
 
-        const relative = relativize(found.fqn, imports);
+        const relative = shortestRelative(found.fqn, imports, namespaceDeclaration(text)?.name ?? null);
 
         if (relative) {
             return [shortenAction(document, span, relative, `Shorten to \`${relative}\``)];
@@ -985,9 +1036,9 @@ async function importActionsFor(document, text, offset, token) {
     }
 
     return candidates.sort().map((fqn) => {
-        // Reuse an imported parent namespace rather than adding an import,
-        // which is the spelling the completion provider already produces.
-        const relative = relativize(fqn, imports);
+        // Reuse an imported parent namespace, or the file's own namespace,
+        // rather than adding an import.
+        const relative = shortestRelative(fqn, imports, namespace || null);
 
         if (relative) {
             return shortenAction(document, span, relative, `Use \`${relative}\``);
@@ -1361,6 +1412,7 @@ async function updateReferences(edit, renames, output) {
         }
 
         const imports = collectImports(text);
+        const namespace = namespaceDeclaration(text)?.name ?? null;
         let found = 0;
 
         const apply = (occurrences) => {
@@ -1374,15 +1426,17 @@ async function updateReferences(edit, renames, output) {
             apply(fqnReplacements(text, rename.oldFqn, rename.newFqn));
 
             // A name written against an imported parent namespace, such as
-            // `PageBlocks\About\CompanyInfoBlock` under `use App\Filament\PageBlocks;`.
-            // Neither the fully qualified nor the bare pass can see it.
-            const oldRelative = relativize(rename.oldFqn, imports);
+            // `PageBlocks\About\CompanyInfoBlock` under `use App\Filament\PageBlocks;`,
+            // or against the file's own namespace, such as `Corporate\ProductSeeder`
+            // inside `namespace Database\Seeders;`. Neither the fully qualified
+            // nor the bare pass can see either spelling.
+            const oldRelative = shortestRelative(rename.oldFqn, imports, namespace);
 
             if (oldRelative) {
-                // Once moved out from under that import there is no relative
-                // spelling left, so fall back to a root-qualified name — an
-                // unqualified one would resolve against the current namespace.
-                const newRelative = relativize(rename.newFqn, imports) ?? `\\${rename.newFqn}`;
+                // Once moved out from under that import or namespace there is no
+                // relative spelling left, so fall back to a root-qualified name —
+                // an unqualified one would resolve against the current namespace.
+                const newRelative = shortestRelative(rename.newFqn, imports, namespace) ?? `\\${rename.newFqn}`;
 
                 if (newRelative !== oldRelative) {
                     apply(
@@ -1495,6 +1549,8 @@ module.exports = {
     bareNameAt,
     importStatements,
     unusedImports,
+    namespaceRelative,
+    shortestRelative,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,

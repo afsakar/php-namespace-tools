@@ -33,8 +33,16 @@ Consequences worth knowing:
   Intelephense, DevSense PHP Tools or Phpactor works.
 - Running several language servers at once produces duplicate and
   poorly ordered suggestions. Enable exactly one.
-- Suggestions only appear for namespaces you have already imported. This is
-  deliberate: the extension never adds an import, it only reuses one.
+- Suggestions only appear for namespaces you have already imported, or for
+  classes under the file's own namespace. This is deliberate: the completion
+  never adds an import, it only reuses what already resolves.
+
+A class in a sub-namespace of the file's own needs no import at all, because
+PHP resolves a qualified name against the current namespace. Typing
+`ProductSeeder` inside `namespace Database\Seeders;` therefore offers
+`Corporate\ProductSeeder`, the spelling a Laravel `DatabaseSeeder` already uses.
+The offer is withheld when the leading segment is an imported alias, since PHP
+checks imports first and the name would resolve elsewhere.
 
 ## Shorten a qualified name
 

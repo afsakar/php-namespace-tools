@@ -48,6 +48,8 @@ const {
     bareNameAt,
     importStatements,
     unusedImports,
+    namespaceRelative,
+    shortestRelative,
     importInsertion,
     qualifiedNameOccurrences,
     shortenAllPlan,
@@ -644,9 +646,9 @@ assert.strictEqual(useLines.length, 4, 'three added to the one already there');
 // references, and must never be rewritten.
 assert.ok(bulk.result.includes(`namespace App${B}Models;`), 'the namespace statement is untouched');
 
-// Two different classes sharing a short name: the first wins, the second stays
-// qualified rather than silently resolving to the first.
-const clashing = [
+// Both classes sit under the file's own namespace, so each gets a distinct
+// spelling PHP resolves and neither needs an import at all.
+const sameTree = [
     '<?php', `namespace App;`, '',
     'class Report', '{',
     `    public function a(${B}App${B}Pdf${B}Writer $w) {}`,
@@ -654,26 +656,44 @@ const clashing = [
     '}', '',
 ].join('\n');
 
+const resolved = apply(sameTree);
+assert.strictEqual(resolved.plan.skipped.length, 0, 'a sub-namespace spelling avoids the clash entirely');
+assert.ok(resolved.result.includes(`a(Pdf${B}Writer $w)`), 'the first is written against the namespace');
+assert.ok(resolved.result.includes(`b(Csv${B}Writer $w)`), 'so is the second');
+assert.ok(!resolved.result.includes('use App'), 'and neither needed an import');
+
+// Two different classes sharing a short name, neither reachable through the
+// current namespace: the first wins, the second stays qualified rather than
+// silently resolving to the first.
+const clashing = [
+    '<?php', `namespace App;`, '',
+    'class Report', '{',
+    `    public function a(${B}Vendor${B}Pdf${B}Writer $w) {}`,
+    `    public function b(${B}Vendor${B}Csv${B}Writer $w) {}`,
+    '}', '',
+].join('\n');
+
 const conflicted = apply(clashing);
 assert.strictEqual(conflicted.plan.skipped.length, 1, 'one name is reported as skipped');
-assert.strictEqual(conflicted.plan.skipped[0], `App${B}Csv${B}Writer`, 'the later one is skipped');
-assert.ok(conflicted.result.includes(`use App${B}Pdf${B}Writer;`), 'the first is imported');
-assert.ok(!conflicted.result.includes(`use App${B}Csv${B}Writer;`), 'the second is not imported');
-assert.ok(conflicted.result.includes(`b(${B}App${B}Csv${B}Writer $w)`), 'the second is left fully qualified');
+assert.strictEqual(conflicted.plan.skipped[0], `Vendor${B}Csv${B}Writer`, 'the later one is skipped');
+assert.ok(conflicted.result.includes(`use Vendor${B}Pdf${B}Writer;`), 'the first is imported');
+assert.ok(!conflicted.result.includes(`use Vendor${B}Csv${B}Writer;`), 'the second is not imported');
+assert.ok(conflicted.result.includes(`b(${B}Vendor${B}Csv${B}Writer $w)`), 'the second is left fully qualified');
 
-// Repeat occurrences of one class share a single import.
+// Repeat occurrences of one class share a single import. The class sits
+// outside the file's namespace, so an import is genuinely needed.
 const repeated = [
     '<?php', `namespace App;`, '',
     'class Report', '{',
-    `    public function a(${B}App${B}Pdf${B}Writer $w) {}`,
-    `    public function b(${B}App${B}Pdf${B}Writer $w) {}`,
+    `    public function a(${B}Vendor${B}Pdf${B}Writer $w) {}`,
+    `    public function b(${B}Vendor${B}Pdf${B}Writer $w) {}`,
     '}', '',
 ].join('\n');
 
 const twice = apply(repeated);
 assert.strictEqual(twice.plan.replacements.length, 2, 'both occurrences shortened');
 assert.strictEqual(
-    twice.result.split('\n').filter((line) => line === `use App${B}Pdf${B}Writer;`).length,
+    twice.result.split('\n').filter((line) => line === `use Vendor${B}Pdf${B}Writer;`).length,
     1,
     'imported once',
 );
@@ -822,6 +842,54 @@ assert.deepStrictEqual(
     unusedImports(anonymous).map((entry) => entry.alias),
     [],
     'and the trait it names counts as using the import',
+);
+
+// --- names resolved against the file's own namespace -----------------------
+// From a real DatabaseSeeder, which writes `Corporate\\ProductSeeder::class`
+// inside `namespace Database\\Seeders;` with no import for it at all.
+const seederImports2 = collectImports(
+    `<?php${String.fromCharCode(10)}use Illuminate${SEP}Database${SEP}Seeder;${String.fromCharCode(10)}`,
+);
+
+assert.strictEqual(
+    namespaceRelative(`Database${SEP}Seeders${SEP}Corporate${SEP}ProductSeeder`, `Database${SEP}Seeders`, seederImports2),
+    `Corporate${SEP}ProductSeeder`,
+    'a class in a sub-namespace of the current one',
+);
+
+// A class sitting directly in the namespace already resolves bare.
+assert.strictEqual(
+    namespaceRelative(`Database${SEP}Seeders${SEP}SettingSeeder`, `Database${SEP}Seeders`, seederImports2),
+    null,
+    'a sibling class needs no qualification',
+);
+
+assert.strictEqual(
+    namespaceRelative(`App${SEP}Models${SEP}User`, `Database${SEP}Seeders`, seederImports2),
+    null,
+    'a class outside the namespace',
+);
+
+// PHP checks the leading segment against imports before the current namespace,
+// so writing `Corporate\ProductSeeder` here would resolve to Vendor\Corporate.
+const shadowed = collectImports(`<?php${String.fromCharCode(10)}use Vendor${SEP}Corporate;${String.fromCharCode(10)}`);
+assert.strictEqual(
+    namespaceRelative(`Database${SEP}Seeders${SEP}Corporate${SEP}ProductSeeder`, `Database${SEP}Seeders`, shadowed),
+    null,
+    'an import shadowing the leading segment rules the spelling out',
+);
+
+// The shorter of the two spellings wins.
+const both = collectImports(`<?php${String.fromCharCode(10)}use Database${SEP}Seeders${SEP}Corporate${SEP}Deep;${String.fromCharCode(10)}`);
+assert.strictEqual(
+    shortestRelative(`Database${SEP}Seeders${SEP}Corporate${SEP}Deep${SEP}Thing`, both, `Database${SEP}Seeders`),
+    `Deep${SEP}Thing`,
+    'an import gives a shorter spelling than the namespace here',
+);
+assert.strictEqual(
+    shortestRelative(`Database${SEP}Seeders${SEP}Corporate${SEP}ProductSeeder`, seederImports2, `Database${SEP}Seeders`),
+    `Corporate${SEP}ProductSeeder`,
+    'the namespace is used when no import covers the class',
 );
 
 console.log('all assertions passed');

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.0
+
+- Resolve names against the file's own namespace as well as its imports, so a
+  class in a sub-namespace is offered as `Corporate\ProductSeeder` rather than
+  needing an import. The offer is withheld when an import shadows the leading
+  segment, which PHP resolves first.
+- Follow that spelling when a file moves. A reference written against the
+  current namespace matched none of the three existing passes, so moving a
+  seeder left `Corporate\ProductSeeder::class` pointing at nothing.
+
 ## 0.9.0
 
 - Add a command that removes the imports a file never refers to. A mention in a
