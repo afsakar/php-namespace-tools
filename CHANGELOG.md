@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Repoint references written relative to an imported parent namespace, such as
+  `PageBlocks\About\CompanyInfoBlock` under `use App\Filament\PageBlocks;`.
+  These were previously missed entirely, including by the pre-filter.
+- Reject candidate files on the class short name rather than its namespace. A
+  file using only the relative spelling contains neither the full name nor the
+  old namespace, so the old filter discarded it before any pattern ran.
+
 ## 0.5.0
 
 - Rename the declared class when a PHP file is renamed, and repoint references

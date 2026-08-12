@@ -49,9 +49,11 @@ channel, and VS Code folds the edits into the same undo step as the move.
 
 Read the ceiling before relying on it:
 
-- **References are matched textually on the full name**, not through the
-  reference provider. That is what lets plain strings such as
-  `'App\\Models\\User'` in a config file be repointed, which no PHP language
+- **References are matched in all three spellings**: fully qualified, written
+  relative to an imported parent namespace (`PageBlocks\About\CompanyInfoBlock`
+  under `use App\Filament\PageBlocks;`), and bare. Matching is textual, not
+  driven by the reference provider. That is what lets plain strings such as
+  `'App\Models\User'` in a config file be repointed, which no PHP language
   server resolves. Comments naming the class are rewritten too.
 - **Referencing files are found through `findFiles`**, so a path hidden by your
   `files.exclude` or `search.exclude` is never visited and keeps a stale import.

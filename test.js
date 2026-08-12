@@ -428,4 +428,89 @@ assert.strictEqual(
     'a same-named class from elsewhere is not the renamed one',
 );
 
+// --- partially qualified names ---------------------------------------------
+// The spelling this extension's own completion produces, and the one a real
+// project turned out to use: `use App\\Filament\\PageBlocks;` followed by
+// `PageBlocks\\About\\CompanyInfoBlock::toBlock()`.
+const seeder = `<?php
+namespace Database\\Seeders\\Cms;
+
+use App\\Filament\\PageBlocks;
+
+class PageSeeder
+{
+    public function run(): void
+    {
+        Page::create(['blocks' => [
+            PageBlocks\\About\\CompanyInfoBlock::toBlock(),
+            PageBlocks\\Breadcrumb\\DefaultBlock::toBlock(),
+        ]]);
+    }
+}
+`;
+
+const seederImports = collectImports(seeder);
+const MOVED_OLD = 'App\\Filament\\PageBlocks\\About\\CompanyInfoBlock';
+const MOVED_NEW = 'App\\Filament\\PageBlocks\\CompanyInfoBlock';
+
+assert.strictEqual(
+    relativize(MOVED_OLD, seederImports),
+    'PageBlocks\\About\\CompanyInfoBlock',
+    'the old name as the file spells it',
+);
+assert.strictEqual(
+    relativize(MOVED_NEW, seederImports),
+    'PageBlocks\\CompanyInfoBlock',
+    'the new name still sits under the same import',
+);
+
+const relativeEdits = fqnReplacements(
+    seeder,
+    relativize(MOVED_OLD, seederImports),
+    relativize(MOVED_NEW, seederImports),
+    { separators: ['\\'], rootQualified: false },
+);
+assert.strictEqual(relativeEdits.length, 1, 'one partially qualified occurrence');
+assert.strictEqual(
+    seeder.slice(0, relativeEdits[0].index) +
+        relativeEdits[0].replacement +
+        seeder.slice(relativeEdits[0].index + relativeEdits[0].length),
+    seeder.replace('PageBlocks\\About\\CompanyInfoBlock', 'PageBlocks\\CompanyInfoBlock'),
+    'the sibling block on the next line is untouched',
+);
+
+// The short name is the pre-filter needle precisely because this file contains
+// neither the full name nor the old namespace anywhere.
+assert.ok(!seeder.includes(MOVED_OLD), 'the file never spells the name in full');
+assert.ok(!seeder.includes('App\\Filament\\PageBlocks\\About'), 'nor the old namespace');
+assert.ok(seeder.includes('CompanyInfoBlock'), 'but it must contain the short name');
+
+// A relative name must not match when root-qualified: `\PageBlocks\...` names
+// something in the root namespace, not the imported one.
+assert.strictEqual(
+    fqnReplacements('\\PageBlocks\\About\\CompanyInfoBlock::x()', 'PageBlocks\\About\\CompanyInfoBlock', 'Z', {
+        separators: ['\\'],
+        rootQualified: false,
+    }).length,
+    0,
+    'a root-qualified name is a different class',
+);
+
+// The three passes must not both claim the same text, or one region would be
+// edited twice and the result would be corrupt.
+const fullyQualified = 'use App\\Filament\\PageBlocks\\About\\CompanyInfoBlock;';
+assert.strictEqual(
+    fqnReplacements(fullyQualified, 'PageBlocks\\About\\CompanyInfoBlock', 'Z', {
+        separators: ['\\'],
+        rootQualified: false,
+    }).length,
+    0,
+    'the relative pass does not fire inside a fully qualified name',
+);
+assert.strictEqual(
+    bareNameReplacements('PageBlocks\\About\\CompanyInfoBlock::x()', 'CompanyInfoBlock', 'Z').length,
+    0,
+    'the bare pass does not fire inside a qualified name',
+);
+
 console.log('all assertions passed');

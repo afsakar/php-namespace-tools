@@ -210,20 +210,25 @@ function typeDeclaration(text) {
  * @param {string} text
  * @param {string} oldFqn
  * @param {string} newFqn
+ * @param {{separators?: string[], rootQualified?: boolean}} [options] `rootQualified`
+ *   allows a leading `\`, which is right for a fully qualified name and wrong
+ *   for one written relative to an import, where a leading `\` would name a
+ *   different class in the root namespace.
  * @return {Array<{index: number, length: number, replacement: string}>} Sorted by offset.
  */
-function fqnReplacements(text, oldFqn, newFqn) {
+function fqnReplacements(text, oldFqn, newFqn, options = {}) {
+    const { separators = ['\\', '\\\\'], rootQualified = true } = options;
     const edits = [];
 
-    for (const separator of ['\\', '\\\\']) {
+    for (const separator of separators) {
         const from = oldFqn.split('\\').join(separator);
         const to = newFqn.split('\\').join(separator);
         const literal = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const boundary = separator.replace(/\\/g, '\\\\');
-        const pattern = new RegExp(
-            `(?<![A-Za-z0-9_])(?<![A-Za-z0-9_]${boundary})${literal}(?![A-Za-z0-9_\\\\])`,
-            'g',
-        );
+        const leading = rootQualified
+            ? `(?<![A-Za-z0-9_])(?<![A-Za-z0-9_]${boundary})`
+            : `(?<![A-Za-z0-9_])(?<!${boundary})`;
+        const pattern = new RegExp(`${leading}${literal}(?![A-Za-z0-9_\\\\])`, 'g');
 
         let match;
         while ((match = pattern.exec(text)) !== null) {
@@ -790,17 +795,10 @@ function replaceOffset(edit, uri, text, index, length, replacement) {
  */
 async function updateReferences(edit, renames, output) {
     // Cheap pre-filter so most files are rejected on a substring test rather
-    // than a regex per rename. Both separator spellings have to be looked for,
-    // since a doubled one does not contain the single one as a substring.
-    const needles = [
-        ...new Set(
-            renames.flatMap(({ oldFqn }) => {
-                const namespace = oldFqn.slice(0, oldFqn.lastIndexOf('\\'));
-
-                return [namespace, namespace.split('\\').join('\\\\')];
-            }),
-        ),
-    ];
+    // than a regex per rename. The short name is the one thing every spelling
+    // of a reference contains — fully qualified, partially qualified against an
+    // imported namespace, or bare — so rejecting on it cannot lose a match.
+    const needles = [...new Set(renames.map(({ oldName }) => oldName))];
 
     const candidates = await vscode.workspace.findFiles('**/*.php', '**/{vendor,node_modules}/**');
     let files = 0;
@@ -813,24 +811,47 @@ async function updateReferences(edit, renames, output) {
             continue;
         }
 
+        const imports = collectImports(text);
         let found = 0;
 
-        for (const rename of renames) {
-            for (const occurrence of fqnReplacements(text, rename.oldFqn, rename.newFqn)) {
+        const apply = (occurrences) => {
+            for (const occurrence of occurrences) {
                 replaceOffset(edit, uri, text, occurrence.index, occurrence.length, occurrence.replacement);
                 found++;
             }
+        };
+
+        for (const rename of renames) {
+            apply(fqnReplacements(text, rename.oldFqn, rename.newFqn));
+
+            // A name written against an imported parent namespace, such as
+            // `PageBlocks\About\CompanyInfoBlock` under `use App\Filament\PageBlocks;`.
+            // Neither the fully qualified nor the bare pass can see it.
+            const oldRelative = relativize(rename.oldFqn, imports);
+
+            if (oldRelative) {
+                // Once moved out from under that import there is no relative
+                // spelling left, so fall back to a root-qualified name — an
+                // unqualified one would resolve against the current namespace.
+                const newRelative = relativize(rename.newFqn, imports) ?? `\\${rename.newFqn}`;
+
+                if (newRelative !== oldRelative) {
+                    apply(
+                        fqnReplacements(text, oldRelative, newRelative, {
+                            separators: ['\\'],
+                            rootQualified: false,
+                        }),
+                    );
+                }
+            }
 
             // A renamed class also has to be repointed where the file refers to
-            // it by its bare name, which the fully qualified pass cannot see.
+            // it by its bare name, which neither pass above can see.
             if (rename.oldName === rename.newName || !resolvesBareName(text, rename)) {
                 continue;
             }
 
-            for (const occurrence of bareNameReplacements(text, rename.oldName, rename.newName)) {
-                replaceOffset(edit, uri, text, occurrence.index, occurrence.length, occurrence.replacement);
-                found++;
-            }
+            apply(bareNameReplacements(text, rename.oldName, rename.newName));
         }
 
         if (found > 0) {
