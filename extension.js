@@ -1775,6 +1775,7 @@ const expectedNamespaces = new Map();
 function watchNamespaces(context) {
     const collection = vscode.languages.createDiagnosticCollection('phpNamespaceTools');
     const psr4ByFolder = new Map();
+    const pending = new Map();
 
     /** @param {vscode.TextDocument} document */
     async function check(document) {
@@ -1854,10 +1855,33 @@ function watchNamespaces(context) {
         collection,
         vscode.workspace.onDidOpenTextDocument(check),
         vscode.workspace.onDidSaveTextDocument(check),
-        vscode.workspace.onDidChangeTextDocument((event) => check(event.document)),
+        // Debounced: a keystroke would otherwise rescan the whole file, and the
+        // answer only matters once typing pauses.
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            const key = event.document.uri.toString();
+
+            clearTimeout(pending.get(key));
+            pending.set(
+                key,
+                setTimeout(() => {
+                    pending.delete(key);
+                    check(event.document);
+                }, 400),
+            );
+        }),
         vscode.workspace.onDidCloseTextDocument((document) => {
+            const key = document.uri.toString();
+
+            clearTimeout(pending.get(key));
+            pending.delete(key);
             collection.delete(document.uri);
-            expectedNamespaces.delete(document.uri.toString());
+            expectedNamespaces.delete(key);
+        }),
+
+        // Nothing should still be scheduled once the extension is torn down.
+        new vscode.Disposable(() => {
+            pending.forEach(clearTimeout);
+            pending.clear();
         }),
 
         // A changed composer.json can make every open file conform or stop
@@ -1921,24 +1945,49 @@ const organizeProvider = {
         }
 
         const text = document.getText();
-        const organized = organizeImportsText(text, {
-            shorten: vscode.workspace
-                .getConfiguration('phpNamespaceTools')
-                .get('organizeImports.shortenQualifiedNames', false),
-        });
-
-        if (organized === text) {
-            return undefined;
-        }
+        const shorten = vscode.workspace
+            .getConfiguration('phpNamespaceTools')
+            .get('organizeImports.shortenQualifiedNames', false);
 
         const action = new vscode.CodeAction('Organize imports', vscode.CodeActionKind.SourceOrganizeImports);
 
         action.edit = new vscode.WorkspaceEdit();
-        action.edit.replace(
-            document.uri,
-            new vscode.Range(document.positionAt(0), document.positionAt(text.length)),
-            organized,
-        );
+
+        if (shorten) {
+            // Shortening moves everything after each name, so the spans of the
+            // removal pass belong to the rewritten text and cannot be mapped
+            // back. This branch is opt-in and explicit, so a whole-file
+            // replacement is acceptable here.
+            const organized = organizeImportsText(text, { shorten: true });
+
+            if (organized === text) {
+                return undefined;
+            }
+
+            action.edit.replace(
+                document.uri,
+                new vscode.Range(document.positionAt(0), document.positionAt(text.length)),
+                organized,
+            );
+
+            return [action];
+        }
+
+        // Delete exactly the dead statements. Replacing the whole document
+        // instead would collide with anything typed while an auto-save is in
+        // flight, which is what running on save makes routine.
+        const dead = unusedImports(text);
+
+        if (dead.length === 0) {
+            return undefined;
+        }
+
+        for (const entry of dead) {
+            action.edit.delete(
+                document.uri,
+                new vscode.Range(document.positionAt(entry.start), document.positionAt(entry.end)),
+            );
+        }
 
         return [action];
     },

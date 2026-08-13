@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0
+
+- Delete exactly the dead import statements when organizing, instead of
+  replacing the whole document. A full replacement raced anything typed while
+  an auto-save was in flight, which running on save makes routine.
+- Debounce the diagnostics, which were rescanning the file on every keystroke.
+
 ## 0.15.0
 
 - Fade the imports a file never refers to, each with a quick fix that removes
