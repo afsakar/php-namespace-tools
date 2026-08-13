@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0
+
+- Fade the imports a file never refers to, each with a quick fix that removes
+  it, rather than only finding them when the removal command is run.
+- Offer organizing as a `source.organizeImports` action, so it can run on save.
+  It removes unused imports only; shortening qualified names is opt-in, since
+  that rewrites working code.
+
 ## 0.14.0
 
 - Add a command that renames a class and its file together and repoints every

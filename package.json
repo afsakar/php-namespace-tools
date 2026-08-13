@@ -2,7 +2,7 @@
     "name": "php-namespace-tools",
     "displayName": "PHP Namespace Tools",
     "description": "PhpStorm-style completion: reuse an existing namespace import as a prefix instead of adding a new use statement.",
-    "version": "0.14.0",
+    "version": "0.15.0",
     "publisher": "afsakar",
     "license": "MIT",
     "author": {
@@ -95,6 +95,16 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Warn when a PHP file declares a namespace its composer PSR-4 directory does not imply, with a quick fix to correct it. Catches files moved outside VS Code, which the move handler cannot see."
+                },
+                "phpNamespaceTools.flagUnusedImports": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Fade the import statements a file never refers to, each with a quick fix that removes it."
+                },
+                "phpNamespaceTools.organizeImports.shortenQualifiedNames": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also shorten every fully qualified name when organizing imports. Off by default: it rewrites working code, where removing an unused import does not. Run `Shorten All Qualified Names` for a one-off pass instead."
                 }
             }
         },

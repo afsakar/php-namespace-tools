@@ -118,6 +118,25 @@ compiling. For the same reason three shapes are never touched:
 Usages inside docblocks, attributes, `implements` clauses and trait `use`
 statements all count, including inside an anonymous class body.
 
+## Organize imports
+
+Unused imports are faded in place, each with a quick fix that removes it, and
+the whole file can be organized at once through the `source.organizeImports`
+action — which means VS Code can run it on save:
+
+```json
+"[php]": {
+    "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
+}
+```
+
+By default organizing only removes what is dead. Shortening qualified names is
+opt-in through `phpNamespaceTools.organizeImports.shortenQualifiedNames`,
+because it rewrites working code: over a real project it changed 85 files of
+578 and shortened 374 names, against a single file with the default. PhpStorm
+draws the same line — its Optimize Imports removes and sorts, and converting a
+qualified name is a separate, explicit action.
+
 ## Namespace conformance
 
 A file whose `namespace` does not match its composer PSR-4 directory is flagged,
@@ -199,6 +218,8 @@ setting `editor.wordSeparators` yourself overrides it.
 | `phpNamespaceTools.maximumFilesPerMove` | `500` | Refuse a move touching more PHP files than this. |
 | `phpNamespaceTools.updateImportsOnMove` | `true` | Repoint references to a moved class across the project. |
 | `phpNamespaceTools.validateNamespace` | `true` | Warn when a namespace does not match its PSR-4 directory. |
+| `phpNamespaceTools.flagUnusedImports` | `true` | Fade imports the file never refers to. |
+| `phpNamespaceTools.organizeImports.shortenQualifiedNames` | `false` | Also shorten qualified names when organizing. |
 
 ## Troubleshooting
 

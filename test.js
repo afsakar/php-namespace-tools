@@ -50,6 +50,8 @@ const {
     unusedImports,
     bladeImports,
     bladeImportInsertion,
+    applyShortenPlan,
+    organizeImportsText,
     importsOf,
     namespaceRelative,
     shortestRelative,
@@ -607,17 +609,11 @@ assert.strictEqual(
 // --- shortening every name in a file ---------------------------------------
 const B = String.fromCharCode(92);
 
+// Exercises the function the extension itself uses, rather than a copy of it.
 const apply = (text) => {
-    const plan = shortenAllPlan(text);
-    let result = text;
-    const edits = [
-        ...plan.replacements.map((e) => ({ index: e.index, length: e.length, text: e.replacement })),
-        ...plan.insertions.map((e) => ({ index: e.index, length: 0, text: e.text })),
-    ].sort((a, b) => b.index - a.index || b.length - a.length);
-    for (const e of edits) {
-        result = result.slice(0, e.index) + e.text + result.slice(e.index + e.length);
-    }
-    return { result, plan };
+    const applied = applyShortenPlan(text);
+
+    return { result: applied.text, plan: applied.plan };
 };
 
 const many = [
@@ -977,5 +973,56 @@ assert.strictEqual(
     `@use('App${SEP}Enums${SEP}Status')\n<div>{{ $x }}</div>\n`,
     'opens the file when there is nothing to join',
 );
+
+// --- organize imports ------------------------------------------------------
+const messy = [
+    '<?php', '',
+    `namespace App${SEP}Models;`, '',
+    `use App${SEP}Enums${SEP}Unused;`,
+    `use Illuminate${SEP}Database${SEP}Eloquent${SEP}Model;`, '',
+    'class Product extends Model',
+    '{',
+    `    public function scope(${SEP}Illuminate${SEP}Database${SEP}Eloquent${SEP}Builder $q) {}`,
+    '}', '',
+].join('\n');
+
+const organized = organizeImportsText(messy, { shorten: true });
+
+assert.ok(organized.includes('scope(Builder $q)'), 'the qualified name is shortened');
+assert.ok(
+    organized.includes(`use Illuminate${SEP}Database${SEP}Eloquent${SEP}Builder;`),
+    'and the import it needs is added',
+);
+assert.ok(!organized.includes(`use App${SEP}Enums${SEP}Unused;`), 'the unreferenced import is dropped');
+assert.ok(organized.includes(`use Illuminate${SEP}Database${SEP}Eloquent${SEP}Model;`), 'a used import survives');
+
+// Ordering is the load-bearing part: shortening runs first so the import it
+// adds is already referenced when the unused pass looks for dead ones.
+assert.ok(
+    !organizeImportsText(messy, { shorten: true }).includes(`use App${SEP}Enums${SEP}Unused;`) &&
+        organizeImportsText(messy, { shorten: true }).includes('Builder;'),
+    'an import added by shortening is never removed as unused',
+);
+
+// The default leaves working code alone and only drops what is dead.
+const removalOnly = organizeImportsText(messy);
+assert.ok(!removalOnly.includes(`use App${SEP}Enums${SEP}Unused;`), 'the dead import still goes');
+assert.ok(
+    removalOnly.includes(`scope(${SEP}Illuminate${SEP}Database${SEP}Eloquent${SEP}Builder $q)`),
+    'but the qualified name is left as written',
+);
+
+// Nothing to do must be reported as nothing to do, or the source action would
+// rewrite the whole file on every save.
+const tidy = [
+    '<?php', '',
+    `namespace App${SEP}Models;`, '',
+    `use Illuminate${SEP}Database${SEP}Eloquent${SEP}Model;`, '',
+    'class Product extends Model',
+    '{',
+    '}', '',
+].join('\n');
+
+assert.strictEqual(organizeImportsText(tidy), tidy, 'a tidy file comes back byte for byte identical');
 
 console.log('all assertions passed');
