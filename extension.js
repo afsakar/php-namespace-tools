@@ -1722,32 +1722,6 @@ function applyShortenPlan(text) {
     return { text: result, plan };
 }
 
-/**
- * Drop the imports a file never refers to, optionally shortening first.
- *
- * Shortening is off by default because it rewrites working code: run over a
- * real project it touched 85 files of 578 and shortened 374 names. PhpStorm's
- * own Optimize Imports removes and sorts but never converts a qualified name,
- * leaving that to an explicit action, and this follows it.
- *
- * When shortening is on it runs first on purpose: it rewrites a qualified name
- * to a short one and adds the import behind it, so that import is already in
- * use by the time the second pass looks for dead ones.
- *
- * @param {string} text
- * @param {{shorten?: boolean}} [options]
- * @return {string}
- */
-function organizeImportsText(text, options = {}) {
-    let result = options.shorten ? applyShortenPlan(text).text : text;
-
-    for (const dead of [...unusedImports(result)].reverse()) {
-        result = result.slice(0, dead.start) + result.slice(dead.end);
-    }
-
-    return result;
-}
-
 /** Identifies the diagnostics this extension raises, so their fixes find them. */
 const PSR4_DIAGNOSTIC = 'psr4-namespace';
 const UNUSED_DIAGNOSTIC = 'unused-import';
@@ -1931,69 +1905,6 @@ const namespaceFixProvider = {
 };
 
 /**
- * Shortens every qualified name and drops the imports left unreferenced.
- *
- * Offered as a source action so `editor.codeActionsOnSave` can run it, which is
- * why it never prompts and reports nothing.
- *
- * @type {vscode.CodeActionProvider}
- */
-const organizeProvider = {
-    provideCodeActions(document) {
-        if (document.languageId !== 'php') {
-            return undefined;
-        }
-
-        const text = document.getText();
-        const shorten = vscode.workspace
-            .getConfiguration('phpNamespaceTools')
-            .get('organizeImports.shortenQualifiedNames', false);
-
-        const action = new vscode.CodeAction('Organize imports', vscode.CodeActionKind.SourceOrganizeImports);
-
-        action.edit = new vscode.WorkspaceEdit();
-
-        if (shorten) {
-            // Shortening moves everything after each name, so the spans of the
-            // removal pass belong to the rewritten text and cannot be mapped
-            // back. This branch is opt-in and explicit, so a whole-file
-            // replacement is acceptable here.
-            const organized = organizeImportsText(text, { shorten: true });
-
-            if (organized === text) {
-                return undefined;
-            }
-
-            action.edit.replace(
-                document.uri,
-                new vscode.Range(document.positionAt(0), document.positionAt(text.length)),
-                organized,
-            );
-
-            return [action];
-        }
-
-        // Delete exactly the dead statements. Replacing the whole document
-        // instead would collide with anything typed while an auto-save is in
-        // flight, which is what running on save makes routine.
-        const dead = unusedImports(text);
-
-        if (dead.length === 0) {
-            return undefined;
-        }
-
-        for (const entry of dead) {
-            action.edit.delete(
-                document.uri,
-                new vscode.Range(document.positionAt(entry.start), document.positionAt(entry.end)),
-            );
-        }
-
-        return [action];
-    },
-};
-
-/**
  * Deletes a single import the file never refers to.
  *
  * @type {vscode.CodeActionProvider}
@@ -2055,9 +1966,6 @@ function activate(context) {
         vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, unusedFixProvider, {
             providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
         }),
-        vscode.languages.registerCodeActionsProvider({ language: 'php', scheme: 'file' }, organizeProvider, {
-            providedCodeActionKinds: [vscode.CodeActionKind.SourceOrganizeImports],
-        }),
         vscode.commands.registerCommand('phpNamespaceTools.debugSymbols', () => debugSymbols(output)),
         vscode.commands.registerCommand('phpNamespaceTools.removeUnusedImports', () => removeUnusedImports(output)),
         vscode.commands.registerCommand('phpNamespaceTools.renameClass', () => renameClassAndFile(output)),
@@ -2094,7 +2002,6 @@ module.exports = {
     bladeImports,
     bladeImportInsertion,
     applyShortenPlan,
-    organizeImportsText,
     importsOf,
     namespaceRelative,
     shortestRelative,

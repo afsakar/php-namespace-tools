@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0
+
+- Remove the `source.organizeImports` action. Unused imports are still faded and
+  still removable through the quick fix or the command, but nothing deletes an
+  import without being asked.
+
 ## 0.16.0
 
 - Delete exactly the dead import statements when organizing, instead of

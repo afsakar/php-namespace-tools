@@ -103,8 +103,13 @@ Removing unused imports and the PSR-4 check stay PHP only.
 
 ## Remove unused imports
 
-**PHP Namespace Tools: Remove Unused Imports** deletes the `use` statements the
-open file never refers to.
+Imports the open file never refers to are faded in place, each carrying a quick
+fix that removes it. **PHP Namespace Tools: Remove Unused Imports** clears them
+all at once.
+
+Nothing is ever removed on its own: there is no save-time action, so a removal
+only happens when you ask for one. Set `phpNamespaceTools.flagUnusedImports` to
+`false` to stop the fading as well.
 
 The search is deliberately reluctant. An alias mentioned in a comment or inside
 a string counts as used, because the two mistakes are not equal: keeping a
@@ -117,25 +122,6 @@ compiling. For the same reason three shapes are never touched:
 
 Usages inside docblocks, attributes, `implements` clauses and trait `use`
 statements all count, including inside an anonymous class body.
-
-## Organize imports
-
-Unused imports are faded in place, each with a quick fix that removes it, and
-the whole file can be organized at once through the `source.organizeImports`
-action — which means VS Code can run it on save:
-
-```json
-"[php]": {
-    "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
-}
-```
-
-By default organizing only removes what is dead. Shortening qualified names is
-opt-in through `phpNamespaceTools.organizeImports.shortenQualifiedNames`,
-because it rewrites working code: over a real project it changed 85 files of
-578 and shortened 374 names, against a single file with the default. PhpStorm
-draws the same line — its Optimize Imports removes and sorts, and converting a
-qualified name is a separate, explicit action.
 
 ## Namespace conformance
 
@@ -219,7 +205,6 @@ setting `editor.wordSeparators` yourself overrides it.
 | `phpNamespaceTools.updateImportsOnMove` | `true` | Repoint references to a moved class across the project. |
 | `phpNamespaceTools.validateNamespace` | `true` | Warn when a namespace does not match its PSR-4 directory. |
 | `phpNamespaceTools.flagUnusedImports` | `true` | Fade imports the file never refers to. |
-| `phpNamespaceTools.organizeImports.shortenQualifiedNames` | `false` | Also shorten qualified names when organizing. |
 
 ## Troubleshooting
 
