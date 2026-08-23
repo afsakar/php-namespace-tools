@@ -17,6 +17,19 @@ the import block around it.
 - **Import an unresolved name** — one offer per candidate class
 - **Blade** — the same completion and fixes, through `@use`
 
+## Install
+
+Download the `.vsix` from the [latest release](https://github.com/afsakar/php-namespace-tools/releases/latest), then:
+
+```bash
+code --install-extension php-namespace-tools-*.vsix
+```
+
+Or from VS Code: **Extensions** → `...` menu → **Install from VSIX...**
+
+Updating means installing a newer `.vsix` over the old one; VS Code replaces it
+in place. Not on the marketplace, so updates are not automatic.
+
 ## Requirements
 
 A PHP language server that indexes your project: Intelephense, DEVSENSE PHP
