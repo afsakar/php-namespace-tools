@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.0
+
+- Add a marketplace icon.
+
 ## 0.17.0
 
 - Remove the `source.organizeImports` action. Unused imports are still faded and
